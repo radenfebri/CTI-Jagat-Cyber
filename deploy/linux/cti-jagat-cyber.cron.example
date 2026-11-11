@@ -1,0 +1,2 @@
+# Install as /etc/cron.d/cti-jagat-cyber after adjusting the account and paths.
+* * * * * www-data cd /var/www/cti-jagat-cyber && /usr/bin/php artisan schedule:run --no-interaction >> storage/logs/cti-scheduler.log 2>&1

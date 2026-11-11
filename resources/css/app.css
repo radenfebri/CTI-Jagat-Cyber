@@ -1,0 +1,61 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+@theme inline {
+    --color-canvas: var(--cti-canvas);
+    --color-panel: var(--cti-panel);
+    --color-raised: var(--cti-raised);
+    --color-line: var(--cti-line);
+    --color-ink: var(--cti-ink);
+    --color-muted: var(--cti-muted);
+    --color-signal: var(--cti-signal);
+    --color-signal-bg: var(--cti-signal-bg);
+}
+
+:root {
+    color-scheme: dark;
+    --cti-canvas: #0b111d;
+    --cti-panel: #111a2a;
+    --cti-raised: #182437;
+    --cti-line: #26354a;
+    --cti-ink: #eef4fc;
+    --cti-muted: #a1b1c9;
+    --cti-signal: #55e4ce;
+    --cti-signal-bg: #13332f;
+}
+
+:root[data-theme='light'] {
+    color-scheme: light;
+    --cti-canvas: #edf3fa;
+    --cti-panel: #fff;
+    --cti-raised: #e9f0f8;
+    --cti-line: #cbd8e8;
+    --cti-ink: #122137;
+    --cti-muted: #49617c;
+    --cti-signal: #08685e;
+    --cti-signal-bg: #d8f2eb;
+}
+
+@layer base {
+    html { scroll-padding-top: 5rem; }
+    :focus-visible { outline: 2px solid var(--cti-signal); outline-offset: 3px; }
+    button:not(:disabled), select, summary { cursor: pointer; }
+}
+
+@layer components {
+    .cti-panel { @apply rounded-2xl border border-line bg-panel; }
+    .cti-field { @apply min-h-11 w-full rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-sm text-ink placeholder:text-muted; }
+    .cti-primary { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#54e2c8] px-4 py-2.5 text-sm font-semibold text-[#091a20] transition-colors hover:bg-[#84efdd]; }
+    .cti-eyebrow { @apply text-[0.68rem] font-semibold tracking-[0.19em] uppercase; }
+    .cti-hero {
+        background-color: #101f36;
+        background-image: linear-gradient(110deg, #111c31 18%, transparent 100%), radial-gradient(ellipse at 80% 30%, #17404b 0%, transparent 72%), repeating-linear-gradient(0deg, #8cf4e311 0px 1px, transparent 1px 28px), repeating-linear-gradient(90deg, #8cf4e311 0px 1px, transparent 1px 28px);
+    }
+}

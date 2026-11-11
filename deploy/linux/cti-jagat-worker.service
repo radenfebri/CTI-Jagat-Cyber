@@ -1,0 +1,19 @@
+[Unit]
+Description=CTI Jagat Cyber queue worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/cti-jagat-cyber
+ExecStart=/usr/bin/php artisan queue:work --queue=cti --sleep=3 --timeout=60 --max-time=3600 --no-interaction
+Restart=always
+RestartSec=5
+TimeoutStopSec=75
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

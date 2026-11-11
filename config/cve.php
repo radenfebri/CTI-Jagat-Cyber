@@ -1,0 +1,19 @@
+<?php
+
+return [
+    'enabled' => filter_var(env('CTI_CVE_ENABLED', false), FILTER_VALIDATE_BOOL),
+    'nvd_url' => rtrim((string) env('CTI_NVD_URL', 'https://services.nvd.nist.gov/rest/json'), '/'),
+    'nvd_api_key' => env('CTI_NVD_API_KEY'),
+    'connect_timeout' => max(1, (int) env('CTI_CVE_CONNECT_TIMEOUT', 5)),
+    'timeout' => max(10, (int) env('CTI_CVE_TIMEOUT', 30)),
+    'technology_cpe' => [
+        'php' => ['part' => 'a', 'vendor' => 'php', 'product' => 'php'],
+        'apache' => ['part' => 'a', 'vendor' => 'apache', 'product' => 'http_server'],
+        'nginx' => ['part' => 'a', 'vendor' => 'nginx', 'product' => 'nginx'],
+        'wordpress' => ['part' => 'a', 'vendor' => 'wordpress', 'product' => 'wordpress'],
+        'bootstrap' => ['part' => 'a', 'vendor' => 'getbootstrap', 'product' => 'bootstrap'],
+        'jquery' => ['part' => 'a', 'vendor' => 'jquery', 'product' => 'jquery'],
+        'drupal' => ['part' => 'a', 'vendor' => 'drupal', 'product' => 'drupal'],
+        'joomla' => ['part' => 'a', 'vendor' => 'joomla', 'product' => 'joomla'],
+    ],
+];

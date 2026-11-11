@@ -1,0 +1,4 @@
+<script setup lang="ts">
+const metrics=[['Monitored Assets','128'],['Critical Findings','3'],['Active IOC Matches','0'],['Security Posture','82/100']]
+</script>
+<template><main class="min-h-screen bg-slate-950 p-6 text-slate-100"><p class="mb-2 text-xs font-semibold uppercase tracking-[.2em] text-cyan-400">CTI Jagat Cyber · Development demo data</p><h1 class="text-3xl font-bold">Security Command Center</h1><div class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><section v-for="m in metrics" :key="m[0]" class="rounded-xl border border-slate-700 bg-slate-900 p-5"><p class="text-sm text-slate-400">{{m[0]}}</p><p class="mt-2 text-2xl font-bold">{{m[1]}}</p></section></div><section class="mt-6 rounded-xl border border-slate-700 bg-slate-900 p-5"><h2 class="font-semibold">Recent activity</h2><p class="mt-3 text-sm text-slate-400">No production scanner is connected. Configure an authorized integration before collecting intelligence.</p></section></main></template>
