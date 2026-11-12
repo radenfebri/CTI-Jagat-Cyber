@@ -25,7 +25,6 @@ class AssetInventoryController extends Controller
 
         $search = $request->query('q');
         $search = is_string($search) ? mb_substr(trim($search), 0, 100) : '';
-        $hidden = $request->query('state') === 'hidden';
         if ($search !== '') {
             $pattern = '%'.strtr($search, ['!' => '!!', '%' => '!%', '_' => '!_']).'%';
             $ip = ObservedNetwork::normalize($search);
@@ -34,10 +33,10 @@ class AssetInventoryController extends Controller
                 ->when($ip !== null, fn (Builder $query) => $query->orWhere('public_ip', $ip)));
         }
 
-        $assets = $inventory->listedSubdomains($hidden)->with('monitoredDomain:id,hostname')
+        $assets = $inventory->listedSubdomains()->with('monitoredDomain:id,hostname')
             ->orderBy('hostname')->orderBy('id')->paginate(20)
-            ->appends(['q' => $search, 'state' => $hidden ? 'hidden' : 'all']);
+            ->appends(['q' => $search]);
 
-        return view('domains.inventory', compact('workspace', 'summary', 'assets', 'search', 'hidden'));
+        return view('domains.inventory', compact('workspace', 'summary', 'assets', 'search'));
     }
 }

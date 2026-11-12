@@ -64,7 +64,7 @@ class AttackSurfaceControllerTest extends TestCase
         $this->tlsEvidence($otherDomain, 'Private issuer');
         $surface = route('attack-surface', $workspace);
 
-        $this->actingAs($owner)->get($surface)->assertOk()->assertSee('Belum ada pemeriksaan TLS')
+        $this->actingAs($owner)->get($surface)->assertOk()->assertSee('No TLS checks are available')
             ->assertDontSee('inventory-only.first-example.com');
         $check = $this->tlsEvidence($ownDomain, 'Example issuer');
 
@@ -86,6 +86,13 @@ class AttackSurfaceControllerTest extends TestCase
         $otherWorkspace = app(CreateOrganization::class)->handle($otherOwner, 'Other Security', 'other-security', null);
         $ownDomain = $this->domain($workspace, 'first-example.com');
         $otherDomain = $this->domain($otherWorkspace, 'other-example.com');
+        $ownDomain->forceFill([
+            'tls_authorization_id' => fake()->uuid(),
+            'tls_scope' => TlsCheck::DIRECT,
+            'tls_approved_ip' => '93.184.216.34',
+            'tls_approved_by' => $owner->id,
+            'tls_approved_at' => now(),
+        ])->save();
         $asset = $this->observation($ownDomain, 'SUBDOMAIN', 'api.first-example.com');
         $web = $this->webResult($ownDomain, $asset->value, '93.184.216.34');
         $web->update([
@@ -99,11 +106,32 @@ class AttackSurfaceControllerTest extends TestCase
         $ownDomain->vulnerabilityFindings()->create([
             'discovered_asset_id' => $asset->id,
             'hostname' => $asset->value,
-            'severity' => 'high',
+            'severity' => 'low',
             'status' => 'open',
             'title' => 'Outdated web framework',
             'cve_id' => 'CVE-2026-1234',
+            'cvss_score' => 9.2,
             'threat_actor' => 'Example Actor',
+            'detected_at' => now(),
+        ]);
+        $ownDomain->vulnerabilityFindings()->create([
+            'discovered_asset_id' => $asset->id,
+            'hostname' => $asset->value,
+            'severity' => 'medium',
+            'status' => 'open',
+            'title' => 'Medium severity finding',
+            'cve_id' => 'CVE-2026-2345',
+            'cvss_score' => 6.4,
+            'detected_at' => now(),
+        ]);
+        $ownDomain->vulnerabilityFindings()->create([
+            'discovered_asset_id' => $asset->id,
+            'hostname' => $asset->value,
+            'severity' => 'critical',
+            'status' => 'resolved',
+            'title' => 'Resolved critical finding',
+            'cve_id' => 'CVE-2026-3456',
+            'cvss_score' => 9.8,
             'detected_at' => now(),
         ]);
         $this->observation($otherDomain, 'SUBDOMAIN', 'private.other-example.com');
@@ -114,11 +142,33 @@ class AttackSurfaceControllerTest extends TestCase
                 && $preview['ports']->contains('port', 443)
                 && $preview['technologies']->contains('TLS certificate')
                 && $preview['technologies']->contains('PHP 8.2.12')
-                && $preview['technologies']->contains('Bootstrap 5.3.3'))
-            ->assertSee('Kerentanan aset')->assertSee('first-example.com');
+                && $preview['technologies']->contains('Bootstrap 5.3.3')
+                && $preview['severity'] === ['severity' => 'critical', 'label' => 'Critical', 'max_score' => 9.2, 'count' => 2])
+            ->assertViewHas('assets', fn ($assets): bool => $assets->first()->vulnerability_summary === [
+                'severity' => 'critical', 'label' => 'Critical', 'max_score' => 9.2, 'count' => 2,
+            ])
+            ->assertViewHas('canManage', true)
+            ->assertSee('Asset Vulnerabilities')
+            ->assertSee('first-example.com')
+            ->assertSee('Critical')
+            ->assertSee('9.2')
+            ->assertSee('Manual Scan');
+
+        $viewer = User::factory()->create();
+        Membership::create(['organization_id' => $workspace->id, 'user_id' => $viewer->id, 'role' => 'viewer']);
+        $this->actingAs($viewer)->get($surface)->assertOk()
+            ->assertViewHas('canManage', false)
+            ->assertDontSee('Manual Scan');
 
         $detail = route('attack-surface.vulnerabilities.detail', ['organization' => $workspace, 'domain' => $ownDomain, 'host' => $asset->value]);
-        $this->get($detail)->assertOk()->assertSee('Outdated web framework')->assertSee('Example Actor');
+        $this->actingAs($owner)->get($detail)->assertOk()
+            ->assertSee('CVE-2026-1234')
+            ->assertSee('Example Actor')
+            ->assertSee('Critical')
+            ->assertSee('9.2')
+            ->assertSee('Manual Scan')
+            ->assertDontSee('Cancel Scan')
+            ->assertDontSee('Related Hostnames');
         $this->get(route('attack-surface.vulnerabilities.detail', [$workspace, $otherDomain]))->assertNotFound();
     }
 
@@ -151,31 +201,56 @@ class AttackSurfaceControllerTest extends TestCase
         $this->post(route('attack-surface.port-scans.store', [$workspace, $domain]), ['consent' => '1'])->assertConflict();
     }
 
-    public function test_hidden_observation_stays_hidden_after_discovery_and_can_be_restored(): void
+    public function test_selecting_a_non_first_asset_keeps_it_active_on_the_current_pagination_page(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = app(CreateOrganization::class)->handle($owner, 'First Security', 'first-security', null);
+        $domain = $this->domain($workspace, 'first-example.com');
+        foreach (range(1, 30) as $number) {
+            $this->observation($domain, 'SUBDOMAIN', sprintf('asset-%02d.first-example.com', $number));
+        }
+
+        $response = $this->actingAs($owner)->get(route('attack-surface.vulnerabilities', [
+            'organization' => $workspace,
+            'page' => 2,
+        ]));
+        $pageAsset = $response->viewData('assets')->getCollection()->get(1);
+        $assetUrl = route('attack-surface.vulnerabilities', [
+            'organization' => $workspace,
+            'q' => '',
+            'page' => 2,
+            'asset' => $pageAsset->id,
+        ]);
+
+        $response->assertOk()->assertSee($assetUrl);
+        $this->get($assetUrl)->assertOk()
+            ->assertViewHas('assets', fn ($assets): bool => $assets->currentPage() === 2)
+            ->assertViewHas('selectedAsset', fn ($asset): bool => $asset->is($pageAsset))
+            ->assertSee($assetUrl.'#asset-'.$pageAsset->id);
+    }
+
+    public function test_deleted_observation_stays_removed_after_discovery(): void
     {
         $owner = User::factory()->create();
         $workspace = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
         $domain = $this->domain($workspace, 'example.com');
         $asset = $this->observation($domain, 'SUBDOMAIN', 'api.example.com', change: true);
         $this->webResult($domain, $asset->value, '93.184.216.34');
-        $action = route('domains.assets.visibility', [$workspace, $domain, $asset]);
+        $delete = route('domains.assets.destroy', [$workspace, $domain, $asset]);
         $inventory = route('assets.inventory', $workspace);
-        $hidden = route('assets.inventory', ['organization' => $workspace, 'state' => 'hidden']);
 
-        $this->actingAs($owner)->patch($action, ['hidden' => '1', 'from_inventory' => '1'])->assertRedirect($inventory.'?state=all');
+        $this->actingAs($owner)->delete($delete, ['confirm_asset' => '1', 'from_inventory' => '1'])->assertRedirect($inventory);
         app(PassiveInventory::class)->syncSnapshot($domain, $asset->source, [[
             'record_type' => 'SUBDOMAIN', 'value' => $asset->value, 'source' => $asset->source,
         ]]);
+
         $this->get($inventory)->assertOk()->assertDontSee($asset->value);
         $this->get(route('domains.show', [$workspace, $domain]))->assertOk()->assertViewHas('assets', fn ($assets) => $assets->isEmpty());
-        $this->get($hidden)->assertOk()->assertSee($asset->value);
-        $this->get(route('domains.show', [$workspace, $domain, 'assets' => 'hidden']))->assertOk()->assertSee('Pulihkan observasi');
-        $this->patch($action, ['hidden' => '0', 'from_inventory' => '1', 'from_hidden' => '1'])->assertRedirect($hidden);
-        $this->get($inventory)->assertOk()->assertSee($asset->value);
-        $this->assertDatabaseHas('audit_logs', ['organization_id' => $workspace->id, 'event' => 'asset.restored']);
+        $this->assertNotNull($asset->refresh()->hidden_at);
+        $this->assertDatabaseHas('audit_logs', ['organization_id' => $workspace->id, 'event' => 'asset.deleted']);
     }
 
-    public function test_only_managers_can_delete_a_confirmed_import_from_the_selected_domain(): void
+    public function test_only_managers_can_delete_a_confirmed_asset_from_the_selected_domain(): void
     {
         $owner = User::factory()->create();
         $viewer = User::factory()->create();
@@ -183,19 +258,17 @@ class AttackSurfaceControllerTest extends TestCase
         Membership::create(['organization_id' => $workspace->id, 'user_id' => $viewer->id, 'role' => 'viewer']);
         $domain = $this->domain($workspace, 'example.com');
         $otherDomain = $this->domain($workspace, 'example.net');
-        $import = $this->observation($domain, 'SUBDOMAIN', 'manual.example.com', source: 'manual');
-        $automatic = $this->observation($domain, 'SUBDOMAIN', 'auto.example.com');
-        $delete = route('domains.assets.destroy', [$workspace, $domain, $import]);
+        $asset = $this->observation($domain, 'SUBDOMAIN', 'api.example.com');
+        $duplicate = $this->observation($domain, 'SUBDOMAIN', 'api.example.com', source: 'manual');
+        $delete = route('domains.assets.destroy', [$workspace, $domain, $asset]);
 
         $this->actingAs($viewer)->delete($delete, ['confirm_asset' => '1'])->assertForbidden();
-        $this->patch(route('domains.assets.visibility', [$workspace, $domain, $import]), ['hidden' => '1'])->assertForbidden();
-        $this->actingAs($owner)->delete(route('domains.assets.destroy', [$workspace, $otherDomain, $import]), ['confirm_asset' => '1'])->assertNotFound();
-        $this->delete(route('domains.assets.destroy', [$workspace, $domain, $automatic]), ['confirm_asset' => '1'])->assertConflict();
+        $this->actingAs($owner)->delete(route('domains.assets.destroy', [$workspace, $otherDomain, $asset]), ['confirm_asset' => '1'])->assertNotFound();
         $this->delete($delete)->assertSessionHasErrors('confirm_asset');
         $this->delete($delete, ['confirm_asset' => '1'])->assertRedirect();
 
-        $this->assertDatabaseMissing('discovered_assets', ['id' => $import->id]);
-        $this->assertDatabaseHas('discovered_assets', ['id' => $automatic->id]);
+        $this->assertNotNull($asset->refresh()->hidden_at);
+        $this->assertNotNull($duplicate->refresh()->hidden_at);
         $this->assertDatabaseHas('audit_logs', ['organization_id' => $workspace->id, 'event' => 'asset.deleted']);
     }
 

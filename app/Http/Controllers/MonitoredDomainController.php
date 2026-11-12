@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Domain\Assets\CloudflareZoneInventory;
 use App\Domain\Assets\DomainJobDispatcher;
 use App\Domain\Assets\DomainName;
 use App\Domain\Assets\MonitoredDomain;
@@ -29,7 +28,7 @@ class MonitoredDomainController extends Controller
         $workspace = $this->workspace($request, $organization);
         $domains = $workspace->monitoredDomains()
             ->withCount(['assets as subdomains_count' => fn ($query) => $query
-                ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')])
+                ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')->whereNull('hidden_at')])
             ->withCount(['assets as active_subdomains_count' => function ($query): void {
                 $query->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')->whereNull('hidden_at')
                     ->whereExists(function ($observations): void {
@@ -52,19 +51,15 @@ class MonitoredDomainController extends Controller
         return view('domains.index', compact('workspace', 'domains', 'canManage'));
     }
 
-    public function show(Request $request, string $organization, string $domain, CloudflareZoneInventory $zone): View
+    public function show(Request $request, string $organization, string $domain): View
     {
         $workspace = $this->workspace($request, $organization);
         $monitoredDomain = $workspace->monitoredDomains()->with('scanPolicy')->findOrFail($domain);
         $canManage = Gate::allows('manage', $monitoredDomain);
-        $assetView = $request->query('assets') === 'hidden' ? 'hidden' : 'subdomains';
         $assetSearch = $request->query('q');
         $assetSearch = is_string($assetSearch) ? mb_substr(trim($assetSearch), 0, 100) : '';
-        $webRoot = $monitoredDomain->webObservations()->where('hostname', $monitoredDomain->hostname)
-            ->where('authorization_id', $monitoredDomain->web_authorization_id)->first();
         $assetCandidates = $monitoredDomain->assets()
-            ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')
-            ->when($assetView === 'hidden', fn ($query) => $query->whereNotNull('hidden_at'), fn ($query) => $query->whereNull('hidden_at'));
+            ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')->whereNull('hidden_at');
         if ($assetSearch !== '') {
             $pattern = '%'.strtr($assetSearch, ['!' => '!!', '%' => '!%', '_' => '!_']).'%';
             $assetCandidates->whereRaw("discovered_assets.value LIKE ? ESCAPE '!'", [$pattern]);
@@ -80,18 +75,17 @@ class MonitoredDomainController extends Controller
             ->whereIn('discovered_assets.id', $representativeIds)
             ->orderBy('discovered_assets.value')->orderBy('discovered_assets.id')
             ->paginate(25, ['discovered_assets.*', 'web_observations.public_ip', 'web_observations.scheme', 'web_observations.status_code'])
-            ->appends(['assets' => $assetView, 'q' => $assetSearch]);
+            ->appends(['q' => $assetSearch]);
         $sourceLabels = $monitoredDomain->assets()->whereIn('value', $assets->getCollection()->pluck('value'))
-            ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')->get(['value', 'source'])
+            ->where('record_type', 'SUBDOMAIN')->whereNull('retired_at')->whereNull('hidden_at')->get(['value', 'source'])
             ->groupBy('value')->map(fn ($items) => $items->map(fn ($item) => $item->subdomainSourceLabel())->unique()->implode(' / '));
         $assets->getCollection()->transform(function ($asset) use ($sourceLabels) {
             $asset->source_labels = $sourceLabels->get($asset->value, $asset->subdomainSourceLabel());
 
             return $asset;
         });
-        $zoneConfigured = $zone->configuredFor($monitoredDomain);
 
-        return view('domains.show', compact('workspace', 'monitoredDomain', 'assets', 'assetView', 'assetSearch', 'canManage', 'zoneConfigured', 'webRoot'));
+        return view('domains.show', compact('workspace', 'monitoredDomain', 'assets', 'assetSearch', 'canManage'));
     }
 
     public function store(Request $request, string $organization): RedirectResponse
@@ -102,7 +96,7 @@ class MonitoredDomainController extends Controller
         $hostname = DomainName::normalize($data['hostname']);
 
         if ($hostname === null || strlen(MonitoredDomain::TXT_PREFIX.$hostname) > 253) {
-            throw ValidationException::withMessages(['hostname' => 'Masukkan nama domain publik tanpa URL, port, atau wildcard.']);
+            throw ValidationException::withMessages(['hostname' => 'Enter a public domain name without a URL, port, or wildcard.']);
         }
 
         try {
@@ -110,19 +104,27 @@ class MonitoredDomainController extends Controller
                 $current = Organization::query()->lockForUpdate()->findOrFail($workspace->id);
 
                 if ($current->monitoredDomains()->count() >= config('cti.domain_limit')) {
-                    throw ValidationException::withMessages(['hostname' => 'Organisasi sudah mencapai batas domain.']);
+                    throw ValidationException::withMessages(['hostname' => 'This organization has reached its domain limit.']);
                 }
 
                 $domain = $current->monitoredDomains()->create(['hostname' => $hostname] + $this->newChallenge());
+                $domain->forceFill([
+                    'verification_status' => 'auto_registered',
+                    'verification_checked_at' => now(),
+                    'verified_at' => now(),
+                ])->save();
                 $this->record($request, $domain, 'domain.registered');
 
                 return $domain;
             });
         } catch (UniqueConstraintViolationException) {
-            throw ValidationException::withMessages(['hostname' => 'Domain ini sudah terdaftar di organisasi Anda.']);
+            throw ValidationException::withMessages(['hostname' => 'This domain is already registered in your organization.']);
         }
 
-        return $this->backToDomain($domain, 'Domain ditambahkan. Pasang record TXT untuk verifikasi.');
+        $this->jobs->ensureAutomaticCoverage($domain);
+        $this->jobs->discover($domain);
+
+        return $this->backToDomain($domain, 'Domain added. Public discovery started automatically.');
     }
 
     public function rotateToken(Request $request, string $organization, string $domain): RedirectResponse
@@ -131,12 +133,12 @@ class MonitoredDomainController extends Controller
 
         DB::transaction(function () use ($request, $target): void {
             $current = $target->newQuery()->lockForUpdate()->findOrFail($target->id);
-            abort_if($current->verified_at !== null, 409, 'Domain sudah terverifikasi.');
+            abort_if($current->verified_at !== null, 409, 'The domain is already verified.');
             $current->forceFill($this->newChallenge() + ['verification_status' => 'pending', 'verification_checked_at' => null])->save();
             $this->record($request, $current, 'domain.challenge_rotated');
         });
 
-        return $this->backToDomain($target, 'Token baru dibuat. Ganti nilai TXT pada DNS.');
+        return $this->backToDomain($target, 'A new token was created. Replace the DNS TXT value.');
     }
 
     public function destroy(Request $request, string $organization, string $domain): RedirectResponse
@@ -144,7 +146,7 @@ class MonitoredDomainController extends Controller
         $target = $this->manageableDomain($request, $organization, $domain);
         $request->validate(
             ['delete_confirmation' => ['required', 'string', Rule::in([$target->hostname])]],
-            ['delete_confirmation.required' => 'Ketik nama domain untuk konfirmasi.', 'delete_confirmation.in' => 'Nama domain yang diketik harus sama persis.'],
+            ['delete_confirmation.required' => 'Type the domain name to confirm.', 'delete_confirmation.in' => 'The domain name must match exactly.'],
         );
 
         DB::transaction(function () use ($request, $target): void {
@@ -154,18 +156,18 @@ class MonitoredDomainController extends Controller
             $current->delete();
         });
 
-        return to_route('domains.index', $organization)->with('status', $target->hostname.' dihapus dari organisasi.');
+        return to_route('domains.index', $organization)->with('status', $target->hostname.' was removed from the organization.');
     }
 
     public function verify(Request $request, string $organization, string $domain): RedirectResponse
     {
         $target = $this->manageableDomain($request, $organization, $domain)->load('organization');
         abort_unless($target->organization->allowsDiscovery(), 403);
-        abort_if($target->verified_at !== null || $target->verification_expires_at->isPast(), 409, 'Token kedaluwarsa atau domain sudah terverifikasi.');
+        abort_if($target->verified_at !== null || $target->verification_expires_at->isPast(), 409, 'The token expired or the domain is already verified.');
 
         $this->jobs->verify($target);
 
-        return $this->backToDomain($target, 'Pemeriksaan TXT dimasukkan ke antrean. Muat ulang halaman untuk melihat hasilnya.');
+        return $this->backToDomain($target, 'The TXT check was queued. Refresh the page to view the result.');
     }
 
     public function approve(Request $request, string $organization, string $domain): RedirectResponse
@@ -177,7 +179,7 @@ class MonitoredDomainController extends Controller
             $workspace = Organization::query()->lockForUpdate()->findOrFail($target->organization_id);
             $current = $workspace->monitoredDomains()->lockForUpdate()->findOrFail($target->id);
             abort_unless($workspace->allowsDiscovery(), 403);
-            abort_if($current->verified_at === null, 409, 'Verifikasi kepemilikan domain terlebih dahulu.');
+            abort_if($current->verified_at === null, 409, 'Verify domain ownership first.');
 
             if ($current->scanPolicy()->first()?->isAuthorized()) {
                 return;
@@ -202,7 +204,7 @@ class MonitoredDomainController extends Controller
 
         $this->jobs->discover($target);
 
-        return $this->backToDomain($target, 'Cakupan pasif disetujui. Lihat status discovery di bawah.');
+        return $this->backToDomain($target, 'Passive discovery scope approved.');
     }
 
     public function revoke(Request $request, string $organization, string $domain): RedirectResponse
@@ -220,7 +222,7 @@ class MonitoredDomainController extends Controller
             }
         });
 
-        return $this->backToDomain($target, 'Izin discovery pasif dicabut.');
+        return $this->backToDomain($target, 'Passive discovery permission revoked.');
     }
 
     public function discover(Request $request, string $organization, string $domain): RedirectResponse
@@ -229,8 +231,8 @@ class MonitoredDomainController extends Controller
         $queued = $this->jobs->discover($target, manual: true);
 
         return $this->backToDomain($target, $queued
-            ? 'Discovery dimasukkan ke antrean.'
-            : 'Discovery belum dapat dijalankan. Periksa izin, status organisasi, atau tunggu 10 menit sejak permintaan terakhir.');
+            ? 'Discovery was queued.'
+            : 'Discovery cannot run yet. Check permissions and organization status, or wait 10 minutes after the last request.');
     }
 
     private function workspace(Request $request, string $organization): Organization

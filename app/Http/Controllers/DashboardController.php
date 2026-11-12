@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Domain\Audit\AuditLogger;
 use App\Domain\Identity\Membership;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
@@ -10,7 +9,7 @@ use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
-    public function __invoke(Request $request, AuditLogger $audit): View
+    public function __invoke(Request $request): View
     {
         $user = $request->user();
         $organizationId = $request->query('organization');
@@ -24,10 +23,8 @@ class DashboardController extends Controller
             abort_if($organization === null, 404);
         }
 
-        $canViewAudit = in_array($organization?->pivot->role, [Membership::OWNER, Membership::ADMIN], true);
-        $activity = $canViewAudit ? $audit->recent($organization->id, $user->id) : collect();
         $memberCount = $organization ? Membership::where('organization_id', $organization->id)->count() : 0;
 
-        return view('dashboard', compact('organizations', 'organization', 'canViewAudit', 'activity', 'memberCount'));
+        return view('dashboard', compact('organizations', 'organization', 'memberCount'));
     }
 }

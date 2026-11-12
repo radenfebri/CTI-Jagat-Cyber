@@ -21,9 +21,9 @@ class DiscoveredAsset extends Model
     public function subdomainSourceLabel(): string
     {
         return match ($this->source) {
-            'cloudflare_zone' => 'Zona DNS Cloudflare',
-            'zone_file' => 'Impor zona BIND',
-            'manual' => 'Impor hostname',
+            'cloudflare_zone' => 'Cloudflare DNS Zone',
+            'zone_file' => 'BIND Zone Import',
+            'manual' => 'Hostname Import',
             default => 'Certificate Transparency',
         };
     }
@@ -31,19 +31,19 @@ class DiscoveredAsset extends Model
     public function observationStatusLabel(): string
     {
         if ($this->hidden_at !== null) {
-            return 'Disembunyikan';
+            return 'Deleted';
         }
 
         if ($this->retired_at !== null) {
-            return 'Tidak terlihat lagi';
+            return 'No longer observed';
         }
 
         return match ($this->source) {
-            'certspotter' => 'Tercatat di sertifikat',
-            'cloudflare_zone' => 'Tercatat di zona',
-            'zone_file' => 'Tercatat di ekspor zona',
-            'manual' => 'Dilaporkan operator',
-            default => 'Teramati',
+            'certspotter' => 'Certificate record',
+            'cloudflare_zone' => 'DNS zone record',
+            'zone_file' => 'Imported zone record',
+            'manual' => 'Operator supplied',
+            default => 'Observed',
         };
     }
 

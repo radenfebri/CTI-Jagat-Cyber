@@ -26,7 +26,7 @@ class WebMonitoringController extends Controller
             $current = $workspace->monitoredDomains()->lockForUpdate()->findOrFail($target->id);
             if ($enabled) {
                 abort_unless($workspace->allowsDiscovery(), 403);
-                abort_if($current->verified_at === null, 409, 'Verifikasi domain terlebih dahulu.');
+                abort_if($current->verified_at === null, 409, 'Verify the domain first.');
             }
 
             if ($enabled === ($current->web_authorization_id !== null)) {
@@ -43,7 +43,7 @@ class WebMonitoringController extends Controller
         });
 
         return to_route('domains.show', [$workspace, $target])->with('status', $enabled
-            ? 'Pemeriksaan web aktif. Hasil muncul setelah jadwal berikutnya.'
-            : 'Pemeriksaan web dihentikan.');
+            ? 'Web monitoring enabled. Results will appear after the next scheduled run.'
+            : 'Web monitoring disabled.');
     }
 }

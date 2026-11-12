@@ -14,7 +14,7 @@ class MapAssetCves implements ShouldBeUnique, ShouldQueue
 
     public int $timeout = 90;
 
-    public int $tries = 3;
+    public int $tries = 6;
 
     public int $uniqueFor = 3600;
 
@@ -30,7 +30,7 @@ class MapAssetCves implements ShouldBeUnique, ShouldQueue
 
     public function backoff(): array
     {
-        return [60, 300];
+        return [60, 300, 900, 1800, 3600];
     }
 
     public function handle(CveMatcher $matcher): void

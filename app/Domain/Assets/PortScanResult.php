@@ -10,7 +10,10 @@ class PortScanResult extends Model
 {
     use HasUuids;
 
-    protected $fillable = ['port_scan_run_id', 'port', 'protocol', 'state', 'latency_ms', 'service', 'observed_at'];
+    protected $fillable = [
+        'port_scan_run_id', 'port', 'protocol', 'state', 'latency_ms', 'service', 'product',
+        'service_version', 'cpe', 'banner', 'fingerprint_source', 'observed_at',
+    ];
 
     public function run(): BelongsTo
     {

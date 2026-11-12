@@ -3,6 +3,7 @@
 namespace App\Domain\Vulnerabilities;
 
 use App\Domain\Assets\MonitoredDomain;
+use App\Domain\Assets\PortScanResult;
 use App\Domain\Assets\VulnerabilityFinding;
 use App\Domain\Assets\WebObservation;
 use App\Models\CveRecord;
@@ -42,6 +43,7 @@ final class CveMatcher
                 if (! is_array($match)) {
                     continue;
                 }
+                $recordData['title'] = Str::limit((string) ($recordData['title'] ?? $recordData['cve_id']), 180);
 
                 $record = CveRecord::updateOrCreate(['cve_id' => $recordData['cve_id']], [
                     ...$recordData,
@@ -54,7 +56,7 @@ final class CveMatcher
                 ]);
                 $finding->fill([
                     'discovered_asset_id' => $asset?->id,
-                    'severity' => $record->severity ?: 'info',
+                    'severity' => CvssSeverity::fromScore($record->cvss_score, $record->severity)->value,
                     'status' => $finding->exists ? $finding->status : 'open',
                     'title' => $record->title ?: $record->cve_id,
                     'cpe' => $cpe,
@@ -78,6 +80,71 @@ final class CveMatcher
                 $finding->save();
                 $mapped++;
             }
+        }
+
+        return $mapped;
+    }
+
+    public function mapPort(PortScanResult $result, MonitoredDomain $domain): int
+    {
+        if (! (bool) config('cve.enabled') || blank($result->cpe) || blank($result->service_version)) {
+            return 0;
+        }
+
+        $asset = $domain->assets()->whereIn('record_type', ['A', 'AAAA'])->where('value', $result->run?->target_ip)->first();
+        $technology = [
+            'name' => $result->product ?: $result->service,
+            'version' => $result->service_version,
+            'source' => $result->fingerprint_source ?: 'tcp_banner',
+        ];
+        $mapped = 0;
+
+        foreach ($this->nvd->vulnerabilitiesForCpe($result->cpe) as $recordData) {
+            $match = collect($recordData['affected_cpes'] ?? [])->first(
+                fn (mixed $criteria): bool => is_array($criteria) && $this->matches($criteria, $result->cpe, $result->service_version),
+            );
+            if (! is_array($match)) {
+                continue;
+            }
+            $recordData['title'] = Str::limit((string) ($recordData['title'] ?? $recordData['cve_id']), 180);
+
+            $record = CveRecord::updateOrCreate(['cve_id' => $recordData['cve_id']], [
+                ...$recordData,
+                'source' => 'nvd',
+            ]);
+            $finding = VulnerabilityFinding::firstOrNew([
+                'monitored_domain_id' => $domain->id,
+                'hostname' => $domain->hostname,
+                'cve_id' => $record->cve_id,
+            ]);
+            $finding->fill([
+                'discovered_asset_id' => $asset?->id,
+                'severity' => CvssSeverity::fromScore($record->cvss_score, $record->severity)->value,
+                'status' => $finding->exists ? $finding->status : 'open',
+                'title' => $record->title ?: $record->cve_id,
+                'cpe' => $result->cpe,
+                'confidence' => 'confirmed',
+                'source' => 'tcp_banner',
+                'cvss_score' => $record->cvss_score,
+                'cisa_kev' => $record->cisa_kev,
+                'matched_version_range' => $this->rangeLabel($match),
+                'fixed_version' => $match['version_end_excluding'] ?? $match['version_end_including'] ?? null,
+                'description' => $record->description,
+                'evidence' => [
+                    'technology' => $technology,
+                    'cpe' => $result->cpe,
+                    'port' => $result->port,
+                    'protocol' => $result->protocol,
+                    'banner' => $result->banner,
+                    'target_ip' => $result->run?->target_ip,
+                    'references' => $record->references ?? [],
+                ],
+                'detected_at' => $finding->detected_at ?: now(),
+                'first_seen_at' => $finding->first_seen_at ?: now(),
+                'last_seen_at' => now(),
+            ]);
+            $finding->save();
+            $mapped++;
         }
 
         return $mapped;
@@ -113,6 +180,13 @@ final class CveMatcher
 
         $criteriaVersion = $expected[5] ?? '*';
         if ($criteriaVersion !== '*' && $criteriaVersion !== $version) {
+            return false;
+        }
+        $hasVersionRange = filled($criteria['version_start_including'] ?? null)
+            || filled($criteria['version_start_excluding'] ?? null)
+            || filled($criteria['version_end_including'] ?? null)
+            || filled($criteria['version_end_excluding'] ?? null);
+        if ($criteriaVersion === '*' && ! $hasVersionRange) {
             return false;
         }
         if (filled($criteria['version_start_including'] ?? null) && version_compare($version, $criteria['version_start_including'], '<')) {

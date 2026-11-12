@@ -18,7 +18,7 @@ class TlsCheck extends Model
 
     public function scopeLabel(): string
     {
-        return $this->scope === self::PUBLIC_ENDPOINT ? 'Endpoint publik' : 'IP langsung';
+        return $this->scope === self::PUBLIC_ENDPOINT ? 'Public endpoint' : 'Direct IP';
     }
 
     protected function casts(): array

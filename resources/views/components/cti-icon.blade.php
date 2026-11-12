@@ -71,5 +71,11 @@
         @case('close')
             <path d="m6 6 12 12M6 18 18 6"/>
             @break
+        @case('sun')
+            <circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+            @break
+        @case('moon')
+            <path d="M20.5 14.2A8 8 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/>
+            @break
     @endswitch
 </svg>

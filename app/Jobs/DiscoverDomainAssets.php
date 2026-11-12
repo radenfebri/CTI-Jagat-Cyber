@@ -59,7 +59,7 @@ class DiscoverDomainAssets implements ShouldQueue
         }
 
         $this->activeRun()->update(['last_status' => 'running']);
-        $matched = $proof->matches($domain);
+        $matched = $domain->verification_status === 'auto_registered' || $proof->matches($domain);
         $observations = $matched ? $discovery->observe($domain->hostname) : [];
         $ctPage = null;
         $ctAttempted = $matched && $domain->ct_authorization_id !== null

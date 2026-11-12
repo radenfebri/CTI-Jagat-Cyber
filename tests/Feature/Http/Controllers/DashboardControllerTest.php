@@ -14,7 +14,7 @@ class DashboardControllerTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    public function test_owner_can_view_their_persisted_organization_and_activity(): void
+    public function test_owner_can_view_their_persisted_organization_overview_without_activity(): void
     {
         $owner = User::factory()->create();
         $organization = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
@@ -22,7 +22,11 @@ class DashboardControllerTest extends TestCase
         $this->actingAs($owner)->get(route('dashboard', ['organization' => $organization->id]))
             ->assertOk()
             ->assertSee('Example Security')
-            ->assertSee('Organisasi dibuat');
+            ->assertSee('Security Overview')
+            ->assertSee('data-theme-choice="light"', escape: false)
+            ->assertSee('data-theme-choice="dark"', escape: false)
+            ->assertDontSee('value="system"', escape: false)
+            ->assertDontSee('Activity');
     }
 
     public function test_returns_404_for_an_organization_the_user_does_not_belong_to(): void
@@ -45,7 +49,7 @@ class DashboardControllerTest extends TestCase
         $this->actingAs($viewer)->get(route('dashboard'))
             ->assertOk()
             ->assertSee('Example Security')
-            ->assertDontSee('Organisasi dibuat');
+            ->assertDontSee('Activity');
     }
 
     public function test_postgresql_hides_audit_rows_without_scope_and_rejects_a_foreign_tenant_scope(): void

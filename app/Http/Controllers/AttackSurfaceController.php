@@ -5,63 +5,43 @@ namespace App\Http\Controllers;
 use App\Domain\Assets\DiscoveredAsset;
 use App\Domain\Assets\MonitoredDomain;
 use App\Domain\Assets\ObservedNetwork;
+use App\Domain\Assets\PortScanDispatcher;
 use App\Domain\Assets\PortScanRun;
 use App\Domain\Assets\TlsCheck;
 use App\Domain\Assets\VulnerabilityFinding;
 use App\Domain\Assets\WebObservation;
-use App\Jobs\ScanPortChunk;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 
 class AttackSurfaceController extends Controller
 {
-    public function startPortScan(Request $request, string $organization, string $domain): RedirectResponse
+    public function startPortScan(Request $request, string $organization, string $domain, PortScanDispatcher $portScanDispatcher): RedirectResponse
     {
         $workspace = $request->user()->organizations()->whereKey($organization)->firstOrFail();
         $monitoredDomain = $workspace->monitoredDomains()->findOrFail($domain);
         Gate::authorize('manage', $monitoredDomain);
-        $request->validate(['consent' => ['accepted']], ['consent.accepted' => 'Konfirmasi bahwa organisasi Anda memiliki izin memindai IP ini.']);
-        abort_unless($monitoredDomain->verified_at !== null, 409, 'Verifikasi TXT domain terlebih dahulu.');
-        abort_unless($monitoredDomain->hasTlsScope() && $monitoredDomain->tls_scope === TlsCheck::DIRECT, 409, 'Scan penuh membutuhkan IP langsung yang disetujui. IP Cloudflare/WAF tidak dipindai sebagai origin.');
-        abort_unless(ObservedNetwork::classify((string) $monitoredDomain->tls_approved_ip) === 'public_unknown', 409, 'IP yang disetujui bukan endpoint publik langsung yang dapat dipindai.');
+        $request->validate(['consent' => ['accepted']], ['consent.accepted' => 'Confirm that your organization is authorized to scan this IP address.']);
+        abort_unless($monitoredDomain->verified_at !== null, 409, 'The domain is not active.');
+        abort_unless($monitoredDomain->hasTlsScope() && $monitoredDomain->tls_scope === TlsCheck::DIRECT, 409, 'A full scan requires an approved direct public IP. Cloudflare and WAF edge addresses are not scanned as origin servers.');
+        abort_unless(ObservedNetwork::classify((string) $monitoredDomain->tls_approved_ip) === 'public_unknown', 409, 'The approved address is not a directly scannable public endpoint.');
 
         if ($monitoredDomain->portScanRuns()->whereIn('status', ['queued', 'running'])->exists()) {
-            return back()->with('status', 'Scan seluruh port sudah berjalan untuk domain ini.');
+            return back()->with('status', 'A full port scan is already running for this domain.');
         }
 
-        $run = DB::transaction(fn (): PortScanRun => $monitoredDomain->portScanRuns()->create([
-            'requested_by' => $request->user()->id,
-            'target_ip' => $monitoredDomain->tls_approved_ip,
-            'range_start' => 1,
-            'range_end' => 65535,
-            'total_ports' => 65535,
-            'status' => 'queued',
-        ]));
-        $chunkSize = config('cti.port_scan.chunk_size', 256);
-        for ($start = 1; $start <= 65535; $start += $chunkSize) {
-            dispatch(new ScanPortChunk($run->id, $start, min(65535, $start + $chunkSize - 1)));
+        $run = $portScanDispatcher->queue($monitoredDomain, $request->user()->id);
+
+        if ($run === null) {
+            return back()->with('status', 'The scan could not be created because the approved direct IP changed.');
         }
 
-        return back()->with('status', 'Scan TCP port 1–65535 dimasukkan ke antrean worker.');
-    }
-
-    public function cancelPortScan(Request $request, string $organization, string $domain, string $run): RedirectResponse
-    {
-        $workspace = $request->user()->organizations()->whereKey($organization)->firstOrFail();
-        $monitoredDomain = $workspace->monitoredDomains()->findOrFail($domain);
-        Gate::authorize('manage', $monitoredDomain);
-        $monitoredDomain->portScanRuns()->whereKey($run)->whereIn('status', ['queued', 'running'])->update([
-            'status' => 'cancelled',
-            'finished_at' => now(),
-            'last_error' => 'Dibatalkan oleh operator.',
-        ]);
-
-        return back()->with('status', 'Scan port dibatalkan.');
+        return back()->with('status', 'The TCP 1-65535 manual scan was queued.');
     }
 
     public function vulnerabilities(Request $request, string $organization): View
@@ -77,7 +57,7 @@ class AttackSurfaceController extends Controller
             ->groupBy('monitored_domain_id', 'value');
         $assetsQuery = DiscoveredAsset::query()
             ->whereIn('id', $dedupe)
-            ->with('monitoredDomain:id,hostname')
+            ->with('monitoredDomain')
             ->when($search !== '', function (Builder $query) use ($search): void {
                 $pattern = '%'.strtr($search, ['!' => '!!', '%' => '!%', '_' => '!_']).'%';
                 $query->where(function (Builder $nested) use ($pattern): void {
@@ -88,8 +68,9 @@ class AttackSurfaceController extends Controller
             })
             ->orderBy('value')->orderBy('id');
 
-        $assets = $assetsQuery->paginate(25)->appends(['q' => $search]);
+        $assets = (clone $assetsQuery)->paginate(25)->appends(['q' => $search]);
         $this->attachWebObservations($assets);
+        $this->attachVulnerabilitySummaries($assets);
         $selectedId = $request->string('asset')->toString();
         $selectedAsset = $selectedId !== ''
             ? (clone $assetsQuery)->whereKey($selectedId)->first()
@@ -110,8 +91,9 @@ class AttackSurfaceController extends Controller
         ];
 
         $preview = $selectedAsset ? $this->assetPreview($selectedAsset) : null;
+        $canManage = $selectedAsset ? Gate::allows('manage', $selectedAsset->monitoredDomain) : false;
 
-        return view('domains.vulnerabilities', compact('workspace', 'assets', 'search', 'selectedAsset', 'preview', 'summary'));
+        return view('domains.vulnerabilities', compact('workspace', 'assets', 'search', 'selectedAsset', 'preview', 'summary', 'canManage'));
     }
 
     public function vulnerabilityDetail(Request $request, string $organization, string $domain): View
@@ -132,8 +114,9 @@ class AttackSurfaceController extends Controller
         $host = $preview['hosts']->firstWhere('hostname', $hostname);
         $findings = $monitoredDomain->vulnerabilityFindings()->where('hostname', $hostname)
             ->whereNotIn('status', ['resolved', 'accepted'])->latest('detected_at')->latest('id')->get();
+        $severity = $this->severitySummary($findings);
 
-        return view('domains.vulnerability-detail', compact('workspace', 'monitoredDomain', 'hostname', 'host', 'findings', 'preview', 'canManage'));
+        return view('domains.vulnerability-detail', compact('workspace', 'monitoredDomain', 'hostname', 'host', 'findings', 'severity', 'preview', 'canManage'));
     }
 
     public function index(Request $request, string $organization): View
@@ -163,12 +146,10 @@ class AttackSurfaceController extends Controller
         $verified = $monitoredDomain->verified_at !== null;
         $tlsCandidates = collect();
 
-        if ($canManage && $verified && ! $monitoredDomain->hasTlsScope()) {
+        if ($canManage && $verified) {
             $current = $monitoredDomain->assets()->whereNull('retired_at');
-            if (! (clone $current)->where('record_type', 'CNAME')->exists()) {
-                $tlsCandidates = $current->whereIn('record_type', ['A', 'AAAA'])->orderBy('value')->limit(200)->pluck('value')
-                    ->filter(fn (string $address) => ObservedNetwork::classify($address) === 'public_unknown')->unique();
-            }
+            $tlsCandidates = $current->whereIn('record_type', ['A', 'AAAA'])->orderBy('value')->limit(200)->pluck('value')
+                ->filter(fn (string $address) => ObservedNetwork::classify($address) === 'public_unknown')->unique();
         }
 
         return view('domains.tls', compact('workspace', 'monitoredDomain', 'tlsChecks', 'canManage', 'verified', 'tlsCandidates'));
@@ -187,20 +168,19 @@ class AttackSurfaceController extends Controller
             ->orderByDesc('checked_at')->get()->groupBy('hostname')->map(fn (Collection $rows): WebObservation => $rows->first());
         $tls = $domain->tlsChecks()->where('status', 'completed')->latest('finished_at')->latest('id')->first();
         $portScan = $domain->portScanRuns()->with('results')->latest('created_at')->first();
-        $signals = $this->signals($observations, $tls);
-        if ($portScan?->results->isNotEmpty()) {
-            $signals['ports'] = $signals['ports']->merge($portScan->results->map(fn ($result): array => [
-                'port' => $result->port,
-                'protocol' => strtoupper($result->protocol),
-                'state' => $result->state === 'open' ? 'Terbuka' : $result->state,
-                'service' => $result->service,
-            ]))->unique('port')->sortBy('port')->values();
-        }
+        $signals = $this->signals($observations, $tls, $portScan?->results);
         $findings = $domain->vulnerabilityFindings()->whereNotIn('status', ['resolved', 'accepted'])
             ->latest('detected_at')->latest('id')->limit(20)->get();
-        $hostRows = $hosts->map(function (string $hostname) use ($domain, $assets, $observations, $tls): array {
+        $hostRows = $hosts->map(function (string $hostname) use ($domain, $assets, $observations, $tls, $portScan): array {
             $observation = $observations->get($hostname);
-            $hostSignals = $this->signals($observation ? collect([$observation]) : collect(), $hostname === $domain->hostname ? $tls : null);
+            $portResults = $portScan && ($hostname === $domain->hostname || $observation?->public_ip === $portScan->target_ip)
+                ? $portScan->results
+                : collect();
+            $hostSignals = $this->signals(
+                $observation ? collect([$observation]) : collect(),
+                $hostname === $domain->hostname ? $tls : null,
+                $portResults,
+            );
 
             return [
                 'hostname' => $hostname,
@@ -208,25 +188,11 @@ class AttackSurfaceController extends Controller
                 'observation' => $observation,
                 'ports' => $hostSignals['ports'],
                 'technologies' => $hostSignals['technologies'],
+                'technologyGroups' => $hostSignals['technologyGroups'],
+                'cveCoverage' => $hostSignals['cveCoverage'],
+                'edgeProtected' => $hostSignals['edgeProtected'],
             ];
         });
-        if ($portScan?->results->isNotEmpty()) {
-            $scanPorts = $portScan->results->map(fn ($result): array => [
-                'port' => $result->port,
-                'protocol' => strtoupper($result->protocol),
-                'state' => $result->state === 'open' ? 'Terbuka' : $result->state,
-                'service' => $result->service,
-            ]);
-            $hostRows = $hostRows->map(function (array $row) use ($domain, $scanPorts): array {
-                if ($row['hostname'] !== $domain->hostname) {
-                    return $row;
-                }
-
-                $row['ports'] = $row['ports']->merge($scanPorts)->unique('port')->sortBy('port')->values();
-
-                return $row;
-            });
-        }
 
         return [
             'assets' => $assets,
@@ -234,6 +200,9 @@ class AttackSurfaceController extends Controller
             'observations' => $observations,
             'ports' => $signals['ports'],
             'technologies' => $signals['technologies'],
+            'technologyGroups' => $signals['technologyGroups'],
+            'cveCoverage' => $signals['cveCoverage'],
+            'edgeProtected' => $signals['edgeProtected'],
             'ips' => $observations->pluck('public_ip')->filter()->unique()->values(),
             'findings' => $findings,
             'threatActors' => $findings->pluck('threat_actor')->filter()->unique()->values(),
@@ -242,35 +211,81 @@ class AttackSurfaceController extends Controller
         ];
     }
 
-    /** @return array{ports: Collection, technologies: Collection} */
-    private function signals(Collection $observations, ?TlsCheck $tls): array
+    /** @return array{ports: Collection, technologies: Collection, technologyGroups: Collection, cveCoverage: array{versioned: int, eligible: int}, edgeProtected: bool} */
+    private function signals(Collection $observations, ?TlsCheck $tls, ?Collection $portResults = null): array
     {
         $ports = collect();
-        $technologies = collect(['DNS']);
+        $technologyFacts = collect([['name' => 'DNS', 'version' => null, 'category' => 'Infrastructure']]);
 
         foreach ($observations as $observation) {
-            $port = $observation->scheme === 'https' ? 443 : 80;
-            $ports->push(['port' => $port, 'protocol' => strtoupper($observation->scheme), 'state' => 'Teramati']);
-            $technologies->push(strtoupper($observation->scheme));
+            if (in_array($observation->scheme, ['http', 'https'], true)) {
+                $port = $observation->scheme === 'https' ? 443 : 80;
+                $ports->push(['port' => $port, 'protocol' => strtoupper($observation->scheme), 'state' => 'Observed']);
+                $technologyFacts->push(['name' => strtoupper($observation->scheme), 'version' => null, 'category' => 'Protocols']);
+            }
             foreach ($observation->technologies ?? [] as $technology) {
                 if (is_array($technology) && filled($technology['name'] ?? null)) {
-                    $technologies->push($technology['name'].(filled($technology['version'] ?? null) ? ' '.$technology['version'] : ''));
+                    $technologyFacts->push([
+                        'name' => (string) $technology['name'],
+                        'version' => filled($technology['version'] ?? null) ? (string) $technology['version'] : null,
+                        'category' => filled($technology['category'] ?? null) ? (string) $technology['category'] : 'Other',
+                    ]);
                 }
             }
             if (ObservedNetwork::classify((string) $observation->public_ip) === 'cloudflare') {
-                $technologies->push('Cloudflare WAF/CDN');
+                $technologyFacts->push(['name' => 'Cloudflare WAF/CDN', 'version' => null, 'category' => 'CDN']);
             }
         }
 
         if ($tls?->result) {
-            $ports->push(['port' => 443, 'protocol' => 'TLS', 'state' => 'Teramati']);
-            $technologies->push('TLS certificate');
+            $ports->push(['port' => 443, 'protocol' => 'TLS', 'state' => 'Observed']);
+            $technologyFacts->push(['name' => 'TLS certificate', 'version' => null, 'category' => 'Security']);
         }
 
-        return ['ports' => $ports->unique('port')->values(), 'technologies' => $technologies->unique()->values()];
+        foreach ($portResults ?? collect() as $result) {
+            $ports->push([
+                'port' => $result->port,
+                'protocol' => strtoupper($result->protocol),
+                'state' => $result->state === 'open' ? 'Open' : $result->state,
+                'service' => $result->service,
+                'product' => $result->product,
+                'version' => $result->service_version,
+                'cpe' => $result->cpe,
+            ]);
+            if (filled($result->product ?? null)) {
+                $technologyFacts->push([
+                    'name' => (string) $result->product,
+                    'version' => filled($result->service_version) ? (string) $result->service_version : null,
+                    'category' => 'Network services',
+                ]);
+            }
+        }
+
+        $technologyFacts = $technologyFacts
+            ->unique(fn (array $technology): string => Str::lower($technology['name'].'|'.($technology['version'] ?? '')))
+            ->values();
+        $technologies = $technologyFacts->map(fn (array $technology): string => $technology['name']
+            .(filled($technology['version']) ? ' '.$technology['version'] : ''));
+        $technologyGroups = $technologyFacts->groupBy('category')->map(fn (Collection $items): Collection => $items
+            ->map(fn (array $technology): string => $technology['name']
+                .(filled($technology['version']) ? ' '.$technology['version'] : ''))->unique()->values());
+        $versioned = $technologyFacts->filter(fn (array $technology): bool => filled($technology['version']));
+        $eligible = $versioned->filter(fn (array $technology): bool => is_array(
+            config('cve.technology_cpe.'.Str::lower($technology['name'])),
+        ));
+
+        return [
+            'ports' => $ports->unique('port')->sortBy('port')->values(),
+            'technologies' => $technologies->unique()->values(),
+            'technologyGroups' => $technologyGroups,
+            'cveCoverage' => ['versioned' => $versioned->count(), 'eligible' => $eligible->count()],
+            'edgeProtected' => $technologyFacts->contains(fn (array $technology): bool => Str::contains(
+                Str::lower($technology['name']), ['cloudflare', 'waf'],
+            )),
+        ];
     }
 
-    private function attachWebObservations($assets): void
+    private function attachWebObservations(LengthAwarePaginator $assets): void
     {
         if ($assets->isEmpty()) {
             return;
@@ -289,7 +304,52 @@ class AttackSurfaceController extends Controller
         });
     }
 
-    /** @return array{asset: DiscoveredAsset, domain: MonitoredDomain, hostname: string, observation: ?WebObservation, ports: Collection, technologies: Collection, ips: Collection, findings: Collection, threatActors: Collection, latestObservedAt: mixed, portScan: ?PortScanRun} */
+    private function attachVulnerabilitySummaries(LengthAwarePaginator $assets): void
+    {
+        if ($assets->isEmpty()) {
+            return;
+        }
+
+        $assetRows = $assets->getCollection();
+        $findings = VulnerabilityFinding::query()
+            ->select(['id', 'monitored_domain_id', 'hostname', 'severity', 'cvss_score'])
+            ->whereIn('monitored_domain_id', $assetRows->pluck('monitored_domain_id')->unique())
+            ->whereIn('hostname', $assetRows->pluck('value')->unique())
+            ->whereNotIn('status', ['resolved', 'accepted'])
+            ->get()
+            ->groupBy(fn (VulnerabilityFinding $finding): string => $finding->monitored_domain_id.'|'.$finding->hostname);
+
+        $assetRows->each(function (DiscoveredAsset $asset) use ($findings): void {
+            $assetFindings = $findings->get($asset->monitored_domain_id.'|'.$asset->value, collect());
+            $asset->setAttribute('vulnerability_summary', $this->severitySummary($assetFindings));
+        });
+    }
+
+    /** @return array{severity: ?string, label: string, max_score: ?float, count: int} */
+    private function severitySummary(Collection $findings): array
+    {
+        $highest = $findings
+            ->map(function (VulnerabilityFinding $finding): array {
+                $score = $finding->cvss_score !== null && is_numeric($finding->cvss_score)
+                    ? (float) $finding->cvss_score
+                    : null;
+
+                return ['severity' => $finding->cvssSeverity(), 'score' => $score];
+            })
+            ->sortByDesc(fn (array $finding): float => ($finding['severity']->rank() * 1000) + ($finding['score'] ?? -1))
+            ->first();
+
+        $highestSeverity = $highest['severity'] ?? null;
+
+        return [
+            'severity' => $highestSeverity?->value,
+            'label' => $highestSeverity?->label() ?? 'No findings',
+            'max_score' => $highest['score'] ?? null,
+            'count' => $findings->count(),
+        ];
+    }
+
+    /** @return array{asset: DiscoveredAsset, domain: MonitoredDomain, hostname: string, observation: ?WebObservation, ports: Collection, technologies: Collection, technologyGroups: Collection, cveCoverage: array{versioned: int, eligible: int}, edgeProtected: bool, ips: Collection, findings: Collection, severity: array{severity: ?string, label: string, max_score: ?float, count: int}, threatActors: Collection, latestObservedAt: mixed, portScan: ?PortScanRun} */
     private function assetPreview(DiscoveredAsset $asset): array
     {
         $domain = $asset->relationLoaded('monitoredDomain') ? $asset->monitoredDomain : $asset->monitoredDomain()->firstOrFail();
@@ -298,16 +358,10 @@ class AttackSurfaceController extends Controller
             : $domain->webObservations()->where('hostname', $asset->value)->latest('checked_at')->first();
         $tls = $domain->tlsChecks()->where('status', 'completed')->latest('finished_at')->latest('id')->first();
         $portScan = $domain->portScanRuns()->with('results')->latest('created_at')->first();
-        $signals = $this->signals($observation ? collect([$observation]) : collect(), $tls);
-
-        if ($portScan?->results->isNotEmpty() && (! $observation?->public_ip || $portScan->target_ip === $observation->public_ip)) {
-            $signals['ports'] = $signals['ports']->merge($portScan->results->map(fn ($result): array => [
-                'port' => $result->port,
-                'protocol' => strtoupper($result->protocol),
-                'state' => $result->state === 'open' ? 'Terbuka' : $result->state,
-                'service' => $result->service,
-            ]))->unique('port')->sortBy('port')->values();
-        }
+        $portResults = $portScan?->results->isNotEmpty() && (! $observation?->public_ip || $portScan->target_ip === $observation->public_ip)
+            ? $portScan->results
+            : collect();
+        $signals = $this->signals($observation ? collect([$observation]) : collect(), $tls, $portResults);
 
         $findings = $domain->vulnerabilityFindings()->where('hostname', $asset->value)
             ->whereNotIn('status', ['resolved', 'accepted'])->latest('detected_at')->latest('id')->get();
@@ -319,8 +373,12 @@ class AttackSurfaceController extends Controller
             'observation' => $observation,
             'ports' => $signals['ports'],
             'technologies' => $signals['technologies'],
+            'technologyGroups' => $signals['technologyGroups'],
+            'cveCoverage' => $signals['cveCoverage'],
+            'edgeProtected' => $signals['edgeProtected'],
             'ips' => collect([$observation?->public_ip])->filter()->unique()->values(),
             'findings' => $findings,
+            'severity' => $this->severitySummary($findings),
             'threatActors' => $findings->pluck('threat_actor')->filter()->unique()->values(),
             'latestObservedAt' => $observation?->checked_at,
             'portScan' => $portScan,

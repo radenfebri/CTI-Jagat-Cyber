@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Domain\Assets\DomainJobDispatcher;
 use App\Domain\Assets\MonitoredDomain;
+use App\Domain\Assets\PortScanDispatcher;
 use App\Jobs\ProbeWebInventory;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
@@ -14,7 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 #[Description('Queue due ownership, passive discovery, web inventory and TLS checks')]
 class DispatchDomainJobs extends Command
 {
-    public function handle(DomainJobDispatcher $dispatcher): int
+    public function handle(DomainJobDispatcher $dispatcher, PortScanDispatcher $portScans): int
     {
         $limit = min(50, max(1, (int) $this->option('limit')));
 
@@ -46,6 +47,9 @@ class DispatchDomainJobs extends Command
             ->whereDoesntHave('tlsChecks', fn (Builder $checks) => $checks->where('created_at', '>', now()->subHours(config('cti.passive_interval_hours'))))
             ->orderBy('id')->limit($limit)->get()
             ->each(fn (MonitoredDomain $domain) => $dispatcher->queueAutomaticTls($domain));
+
+        MonitoredDomain::eligible()->whereNotNull('verified_at')->orderBy('id')->limit($limit)->get()
+            ->each(fn (MonitoredDomain $domain) => $portScans->queueAutomatic($domain));
 
         MonitoredDomain::eligible()->whereNotNull('verified_at')->whereNotNull('web_authorization_id')
             ->where('web_next_run_at', '<=', now())->orderBy('web_next_run_at')->orderBy('id')->limit($limit)->get()

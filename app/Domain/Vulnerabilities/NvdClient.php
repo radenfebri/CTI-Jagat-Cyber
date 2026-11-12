@@ -3,17 +3,33 @@
 namespace App\Domain\Vulnerabilities;
 
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Throwable;
 
 final class NvdClient
 {
     /** @return list<array<string, mixed>> */
     public function vulnerabilitiesForCpe(string $cpe): array
     {
+        return Cache::remember(
+            'cti:nvd:'.hash('sha256', $cpe),
+            now()->addHours((int) config('cve.cache_hours')),
+            fn (): array => $this->requestVulnerabilities($cpe),
+        );
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function requestVulnerabilities(string $cpe): array
+    {
         $request = Http::acceptJson()
             ->connectTimeout((int) config('cve.connect_timeout'))
             ->timeout((int) config('cve.timeout'))
-            ->retry([500, 1500], 2, fn (\Throwable $exception): bool => $exception instanceof ConnectionException);
+            ->retry([1000, 5000], 0, fn (Throwable $exception): bool => $exception instanceof ConnectionException
+                || ($exception instanceof RequestException
+                    && ($exception->response->status() === 429 || $exception->response->serverError())));
 
         if (filled(config('cve.nvd_api_key'))) {
             $request = $request->withHeaders(['apiKey' => (string) config('cve.nvd_api_key')]);
@@ -45,11 +61,14 @@ final class NvdClient
 
         $description = collect($cve['descriptions'] ?? [])->first(fn (mixed $item): bool => is_array($item) && ($item['lang'] ?? null) === 'en');
         $metric = $this->metric($cve['metrics'] ?? []);
+        $descriptionText = is_array($description) && is_string($description['value'] ?? null)
+            ? $description['value']
+            : null;
 
         return [
             'cve_id' => $cve['id'],
-            'title' => is_array($description) ? ($description['value'] ?? null) : null,
-            'description' => is_array($description) ? ($description['value'] ?? null) : null,
+            'title' => $descriptionText ? Str::limit($descriptionText, 180) : $cve['id'],
+            'description' => $descriptionText,
             'severity' => $metric['severity'],
             'cvss_score' => $metric['score'],
             'cvss_vector' => $metric['vector'],

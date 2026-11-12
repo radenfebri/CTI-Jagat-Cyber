@@ -42,7 +42,7 @@ class AuthController extends Controller
             }
 
             $name = $data['organization_name'];
-            $slug = Str::slug($name) ?: 'organisasi';
+            $slug = Str::slug($name) ?: 'organization';
             $createOrganization->handle($user, $name, $slug.'-'.Str::uuid(), $request->ip());
 
             return $user;

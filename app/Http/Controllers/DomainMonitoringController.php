@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Domain\Assets\DomainJobDispatcher;
 use App\Domain\Assets\MonitoredDomain;
 use App\Domain\Assets\ObservedNetwork;
+use App\Domain\Assets\PortScanDispatcher;
 use App\Domain\Assets\TlsCheck;
 use App\Domain\Audit\AuditLogger;
 use App\Jobs\ProbeDomainTls;
@@ -18,7 +19,11 @@ use Illuminate\Validation\ValidationException;
 
 class DomainMonitoringController extends Controller
 {
-    public function __construct(private AuditLogger $audit, private DomainJobDispatcher $jobs) {}
+    public function __construct(
+        private AuditLogger $audit,
+        private DomainJobDispatcher $jobs,
+        private PortScanDispatcher $portScanDispatcher,
+    ) {}
 
     public function configureCt(Request $request, string $organization, string $domain): RedirectResponse
     {
@@ -30,7 +35,7 @@ class DomainMonitoringController extends Controller
             $current = MonitoredDomain::query()->lockForUpdate()->findOrFail($target->id);
             if ($enabled) {
                 abort_unless($current->organization->allowsDiscovery(), 403);
-                abort_unless($current->verified_at && $current->scanPolicy?->isAuthorized(), 409, 'Aktifkan izin discovery pasif terlebih dahulu.');
+                abort_unless($current->verified_at && $current->scanPolicy?->isAuthorized(), 409, 'Enable passive discovery permission first.');
             }
             if ($enabled === ($current->ct_authorization_id !== null)) {
                 return;
@@ -47,7 +52,7 @@ class DomainMonitoringController extends Controller
         });
 
         return to_route('domains.show', [$target->organization_id, $target->id])
-            ->with('status', $enabled ? 'Pencarian sertifikat akan ikut discovery pasif berikutnya.' : 'Pencarian sertifikat dinonaktifkan.');
+            ->with('status', $enabled ? 'Certificate discovery will run with the next passive discovery cycle.' : 'Certificate discovery was disabled.');
     }
 
     public function approveTls(Request $request, string $organization, string $domain): RedirectResponse
@@ -63,19 +68,19 @@ class DomainMonitoringController extends Controller
         if ($scope === TlsCheck::DIRECT) {
             $address = ObservedNetwork::normalize($data['ip_address']);
             if ($address === null || ObservedNetwork::classify($address) !== 'public_unknown') {
-                throw ValidationException::withMessages(['ip_address' => 'Pilih IP publik langsung yang Anda kelola. Untuk Cloudflare, gunakan mode endpoint publik.']);
+                throw ValidationException::withMessages(['ip_address' => 'Select a directly managed public IP. For Cloudflare, use public endpoint mode.']);
             }
         }
 
         DB::transaction(function () use ($request, $target, $scope, $address): void {
             $current = MonitoredDomain::query()->lockForUpdate()->findOrFail($target->id);
             abort_unless($current->organization->allowsDiscovery(), 403);
-            abort_if($current->verified_at === null, 409, 'Verifikasi DNS TXT diperlukan.');
+            abort_if($current->verified_at === null, 409, 'The domain must be active.');
             if ($scope === TlsCheck::DIRECT) {
                 $observed = $current->assets()->whereNull('retired_at');
                 if ((clone $observed)->where('record_type', 'CNAME')->exists()
                     || ! $observed->whereIn('record_type', ['A', 'AAAA'])->where('value', $address)->exists()) {
-                    throw ValidationException::withMessages(['ip_address' => 'IP langsung harus tercatat pada A atau AAAA aktif untuk hostname ini. Untuk alias CNAME, gunakan mode endpoint publik.']);
+                    throw ValidationException::withMessages(['ip_address' => 'The direct IP must be present in an active A or AAAA record for this hostname. Use public endpoint mode for a CNAME alias.']);
                 }
             }
 
@@ -91,7 +96,13 @@ class DomainMonitoringController extends Controller
             $this->record($request, $current, 'domain.tls_approved', ['scope' => $scope] + ($address === null ? [] : ['ip_address' => $address]));
         });
 
-        return $this->redirectToTls($target, 'Izin TLS tersimpan. Jalankan pemeriksaan saat Anda siap.');
+        if ($scope === TlsCheck::DIRECT) {
+            $this->portScanDispatcher->queue($target, $request->user()->id);
+        }
+
+        return $this->redirectToTls($target, $scope === TlsCheck::DIRECT
+            ? 'Direct IP scope saved. The TCP 1–65535 scan was queued automatically.'
+            : 'Public endpoint TLS scope saved.');
     }
 
     public function revokeTls(Request $request, string $organization, string $domain): RedirectResponse
@@ -116,7 +127,7 @@ class DomainMonitoringController extends Controller
             $this->record($request, $current, 'domain.tls_revoked');
         });
 
-        return $this->redirectToTls($target, 'Izin TLS dicabut.');
+        return $this->redirectToTls($target, 'TLS permission revoked.');
     }
 
     public function queueTls(Request $request, string $organization, string $domain): RedirectResponse
@@ -126,7 +137,7 @@ class DomainMonitoringController extends Controller
         $queued = DB::transaction(function () use ($request, $target): bool {
             $current = MonitoredDomain::query()->lockForUpdate()->findOrFail($target->id);
             abort_unless($current->organization->allowsDiscovery(), 403);
-            abort_unless($current->hasTlsScope(), 409, 'Setujui cakupan TLS terlebih dahulu.');
+            abort_unless($current->hasTlsScope(), 409, 'Approve TLS scope first.');
 
             if ($current->tlsChecks()->where('created_at', '>', now()->subMinutes(10))->exists()) {
                 return false;
@@ -146,7 +157,7 @@ class DomainMonitoringController extends Controller
             return true;
         });
 
-        return $this->redirectToTls($target, $queued ? 'Pemeriksaan TLS dimasukkan ke antrean.' : 'Tunggu 10 menit sejak permintaan TLS terakhir.');
+        return $this->redirectToTls($target, $queued ? 'The TLS check was queued.' : 'Wait 10 minutes after the last TLS request.');
     }
 
     private function target(Request $request, string $organization, string $domain): MonitoredDomain
@@ -167,7 +178,7 @@ class DomainMonitoringController extends Controller
     private function cancelOutstandingPortScans(MonitoredDomain $domain): void
     {
         $domain->portScanRuns()->whereIn('status', ['queued', 'running'])
-            ->update(['status' => 'cancelled', 'last_error' => 'Cakupan IP langsung berubah atau dicabut.', 'finished_at' => now()]);
+            ->update(['status' => 'cancelled', 'last_error' => 'The direct IP scope changed or was revoked.', 'finished_at' => now()]);
     }
 
     /** @param array<string, string> $context */

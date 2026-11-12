@@ -9,6 +9,7 @@ use App\Domain\Tenancy\CreateOrganization;
 use App\Domain\Tenancy\Organization;
 use App\Jobs\DiscoverDomainAssets;
 use App\Jobs\ProbeDomainTls;
+use App\Jobs\ScanPortChunk;
 use App\Models\User;
 use Closure;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -20,6 +21,61 @@ use Tests\TestCase;
 class DomainMonitoringTest extends TestCase
 {
     use LazilyRefreshDatabase;
+
+    public function test_approving_a_direct_ip_scope_queues_the_full_port_scan(): void
+    {
+        Queue::fake();
+        [$owner, $workspace, $domain] = $this->verifiedDomain();
+
+        $this->actingAs($owner)->post(route('domains.tls.approve', [$workspace, $domain]), [
+            'scope' => 'direct',
+            'ip_address' => '93.184.216.34',
+            'consent' => '1',
+        ])->assertRedirect()->assertSessionHas('status', 'Direct IP scope saved. The TCP 1–65535 scan was queued automatically.');
+
+        Queue::assertPushed(ScanPortChunk::class, 256);
+        $this->assertDatabaseHas('port_scan_runs', [
+            'monitored_domain_id' => $domain->id,
+            'target_ip' => '93.184.216.34',
+            'total_ports' => 65535,
+            'status' => 'queued',
+        ]);
+    }
+
+    public function test_scheduler_queues_a_port_scan_for_a_verified_direct_dns_ip(): void
+    {
+        Queue::fake();
+        [$owner, $workspace, $domain] = $this->verifiedDomain();
+
+        $this->artisan('cti:dispatch-domain-jobs')->assertSuccessful();
+
+        Queue::assertPushed(ScanPortChunk::class, 256);
+        $this->assertDatabaseHas('port_scan_runs', [
+            'monitored_domain_id' => $domain->id,
+            'target_ip' => '93.184.216.34',
+            'total_ports' => 65535,
+            'status' => 'queued',
+        ]);
+    }
+
+    public function test_scheduler_waits_for_the_passive_port_scan_interval_but_manual_scope_can_run_again(): void
+    {
+        Queue::fake();
+        [$owner, $workspace, $domain] = $this->verifiedDomain();
+        $domain->portScanRuns()->create([
+            'target_ip' => '93.184.216.34', 'range_start' => 1, 'range_end' => 65535,
+            'total_ports' => 65535, 'completed_ports' => 65535, 'open_ports' => 2, 'status' => 'completed',
+            'finished_at' => now(),
+        ]);
+
+        $this->artisan('cti:dispatch-domain-jobs')->assertSuccessful();
+        Queue::assertNotPushed(ScanPortChunk::class);
+
+        $this->actingAs($owner)->post(route('domains.tls.approve', [$workspace, $domain]), [
+            'scope' => 'direct', 'ip_address' => '93.184.216.34', 'consent' => '1',
+        ])->assertRedirect();
+        Queue::assertPushed(ScanPortChunk::class, 256);
+    }
 
     public function test_scheduler_collects_certificate_pages_then_returns_to_the_regular_interval(): void
     {
@@ -171,7 +227,7 @@ class DomainMonitoringTest extends TestCase
             ]));
 
         $this->actingAs($owner)->get(route('attack-surface.tls', [$workspace, $domain]))->assertOk()
-            ->assertSee('Pemeriksaan TLS endpoint publik akan aktif otomatis')->assertDontSee('Izinkan IP langsung');
+            ->assertSee('Public endpoint TLS checks will be enabled automatically')->assertDontSee('Approve IP');
         $scope = ['scope' => 'public_endpoint', 'consent' => '1'];
         $approveUrl = route('domains.tls.approve', [$workspace, $domain]);
         $this->post($approveUrl, $scope + ['ip_address' => '172.66.40.184'])->assertSessionHasErrors('ip_address');
@@ -185,7 +241,7 @@ class DomainMonitoringTest extends TestCase
 
         $this->assertDatabaseHas('tls_checks', ['id' => $check->id, 'scope' => 'public_endpoint', 'ip_address' => '172.66.43.72', 'status' => 'completed']);
         $this->get(route('attack-surface', $workspace))->assertOk()
-            ->assertSee('Edge CA')->assertSee('172.66.43.72:443')->assertSee('Endpoint publik');
+            ->assertSee('Edge CA')->assertSee('172.66.43.72:443')->assertSee('Public endpoint');
     }
 
     public function test_public_tls_cannot_connect_to_a_non_public_dns_answer(): void

@@ -1,16 +1,18 @@
 @extends('domains.shell')
 
-@section('title', 'Cakupan TLS')
+@section('title', 'TLS Scope')
 
 @section('domain-content')
     @php
-        $statusLabels = ['queued' => 'Dalam antrean', 'running' => 'Berjalan', 'completed' => 'Selesai', 'failed' => 'Gagal', 'cancelled' => 'Dibatalkan'];
+        $statusLabels = ['queued' => 'Queued', 'running' => 'Running', 'completed' => 'Completed', 'failed' => 'Failed', 'cancelled' => 'Cancelled'];
         $formatTime = fn ($time) => $time ? $time->timezone('Asia/Jakarta')->format('d/m/Y H:i').' WIB' : '—';
     @endphp
-    <section class="cti-hero rounded-2xl border border-[#284050] p-6 text-white">
-        <p class="cti-eyebrow text-[#8af1df]">Manajemen Aset · Cakupan TLS</p>
-        <h1 class="mt-2 text-2xl font-bold wrap-anywhere">{{ $monitoredDomain->hostname }}</h1>
-        <a href="{{ route('domains.show', [$workspace, $monitoredDomain]) }}" class="mt-3 inline-block text-sm text-[#c0d4e9] underline">Buka detail aset</a>
+    <section class="cti-hero rounded-2xl border border-[#284050] p-5 text-white">
+        <p class="cti-eyebrow text-[#8af1df]">Asset Management · TLS Scope</p>
+        <h1 class="mt-2 text-xl font-bold wrap-anywhere">{{ $monitoredDomain->hostname }}</h1>
+        <a href="{{ route('domains.show', [$workspace, $monitoredDomain]) }}" class="mt-3 inline-flex items-center gap-1 text-xs text-[#c0d4e9] hover:text-white">
+            View asset <x-cti-icon name="arrow" class="size-3.5"/>
+        </a>
     </section>
     @include('domains.tls-scope')
 @endsection

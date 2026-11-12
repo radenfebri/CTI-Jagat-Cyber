@@ -17,8 +17,9 @@ class MonitoredDomainControllerTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    public function test_owner_registers_a_normalized_domain_and_receives_a_txt_challenge(): void
+    public function test_owner_registers_a_normalized_domain_and_starts_automatic_discovery(): void
     {
+        Queue::fake();
         $owner = User::factory()->create();
         $workspace = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
 
@@ -27,13 +28,16 @@ class MonitoredDomainControllerTest extends TestCase
         $domain = $workspace->monitoredDomains()->firstOrFail();
         $response->assertRedirectToRoute('domains.show', [$workspace, $domain]);
         $this->assertSame('example.com', $domain->hostname);
+        $this->assertSame('auto_registered', $domain->verification_status);
+        $this->assertNotNull($domain->verified_at);
         $this->assertDatabaseHas('audit_logs', ['organization_id' => $workspace->id, 'event' => 'domain.registered']);
         $this->get(route('domains.show', [$workspace, $domain]))->assertOk()
-            ->assertSee('_cti-jagat-cyber.example.com')->assertSee($domain->txtValue());
+            ->assertSee('Automatic discovery is active')->assertDontSee('Verify TXT');
     }
 
     public function test_registration_rejects_urls_and_duplicate_normalized_hostnames(): void
     {
+        Queue::fake();
         $owner = User::factory()->create();
         $workspace = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
         $this->actingAs($owner)->post(route('domains.store', $workspace), ['hostname' => 'example.com'])->assertRedirect();
@@ -46,6 +50,7 @@ class MonitoredDomainControllerTest extends TestCase
 
     public function test_domain_list_shows_the_number_of_discovered_subdomains(): void
     {
+        Queue::fake();
         $owner = User::factory()->create();
         $workspace = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
         $this->actingAs($owner)->post(route('domains.store', $workspace), ['hostname' => 'example.com'])->assertRedirect();
@@ -61,8 +66,8 @@ class MonitoredDomainControllerTest extends TestCase
 
         $this->get(route('domains.index', $workspace))
             ->assertOk()
-            ->assertSee('1 ditemukan')
-            ->assertSee('0 responsif');
+            ->assertSee('1 discovered')
+            ->assertSee('0 responsive');
     }
 
     public function test_domain_detail_groups_the_same_subdomain_across_discovery_sources(): void
@@ -105,8 +110,8 @@ class MonitoredDomainControllerTest extends TestCase
 
             $labels = $assets->first()->source_labels;
 
-            return str_contains($labels, 'Zona DNS Cloudflare') && str_contains($labels, 'Impor hostname');
-        })->assertSee('Tindakan')->assertSee('Kelola subdomain');
+            return str_contains($labels, 'Cloudflare DNS Zone') && str_contains($labels, 'Hostname Import');
+        })->assertSee('Delete app.example.com')->assertDontSee('Manage subdomain')->assertDontSee('Hidden');
 
         $this->actingAs($owner)->get(route('domains.show', [$workspace, $domain]).'?q=app')
             ->assertOk()
@@ -119,6 +124,7 @@ class MonitoredDomainControllerTest extends TestCase
 
     public function test_viewer_cannot_manage_domains_and_another_tenant_gets_404(): void
     {
+        Queue::fake();
         $owner = User::factory()->create();
         $viewer = User::factory()->create();
         $outsider = User::factory()->create();
@@ -136,18 +142,16 @@ class MonitoredDomainControllerTest extends TestCase
         $this->delete(route('domains.destroy', [$unrelated, $domain]), ['delete_confirmation' => $domain->hostname])->assertNotFound();
     }
 
-    public function test_scope_requires_verification_and_explicit_consent(): void
+    public function test_registration_starts_passive_coverage_without_txt_verification(): void
     {
+        Queue::fake();
         $owner = User::factory()->create();
         $workspace = app(CreateOrganization::class)->handle($owner, 'Example Security', 'example-security', null);
         $this->actingAs($owner)->post(route('domains.store', $workspace), ['hostname' => 'example.com'])->assertRedirect();
         $domain = MonitoredDomain::firstOrFail();
 
-        $this->post(route('domains.approve', [$workspace, $domain]), ['consent' => '1'])->assertConflict();
-        $domain->forceFill(['verified_at' => now(), 'verification_status' => 'verified'])->save();
-        $this->post(route('domains.approve', [$workspace, $domain]))->assertSessionHasErrors('consent');
-
-        $this->assertDatabaseCount('domain_scan_policies', 0);
+        $this->assertDatabaseHas('domain_scan_policies', ['monitored_domain_id' => $domain->id, 'revoked_at' => null]);
+        Queue::assertPushed(DiscoverDomainAssets::class);
     }
 
     public function test_domain_deletion_requires_its_name_and_prevents_queued_discovery_from_running(): void
@@ -171,7 +175,7 @@ class MonitoredDomainControllerTest extends TestCase
         $this->mock(DnsResolver::class, fn ($dns) => $dns->shouldNotReceive('records'));
         $url = route('domains.destroy', [$workspace, $domain]);
 
-        $this->get(route('domains.show', [$workspace, $domain]))->assertOk()->assertSee('Hapus domain permanen');
+        $this->get(route('domains.show', [$workspace, $domain]))->assertOk()->assertSee('Delete Domain');
         $this->delete($url, ['delete_confirmation' => 'another.example.com'])->assertSessionHasErrors('delete_confirmation');
         $this->assertDatabaseHas('monitored_domains', ['id' => $domain->id]);
         $this->delete($url, ['delete_confirmation' => $domain->hostname])->assertRedirectToRoute('domains.index', $workspace);

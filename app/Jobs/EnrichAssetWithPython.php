@@ -8,6 +8,7 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Collection;
 
 class EnrichAssetWithPython implements ShouldBeUnique, ShouldQueue
 {
@@ -64,6 +65,8 @@ class EnrichAssetWithPython implements ShouldBeUnique, ShouldQueue
         $technologies = $this->mergeTechnologies($observation->technologies ?? [], $payload['technologies'] ?? []);
 
         $observation->forceFill([
+            'scheme' => $payload['scheme'] ?? $observation->scheme,
+            'status_code' => $payload['status_code'] ?? $observation->status_code,
             'server_header' => $payload['server_header'] ?? $observation->server_header,
             'technologies' => $technologies,
         ])->save();
@@ -76,12 +79,45 @@ class EnrichAssetWithPython implements ShouldBeUnique, ShouldQueue
     /** @param array<int, mixed> $existing @param array<int, mixed> $incoming @return array<int, array<string, mixed>> */
     private function mergeTechnologies(array $existing, mixed $incoming): array
     {
-        $facts = collect($existing)->merge(is_array($incoming) ? $incoming : [])->filter(
-            fn (mixed $technology): bool => is_array($technology) && filled($technology['name'] ?? null),
-        );
+        $incomingFacts = collect(is_array($incoming) ? $incoming : []);
+        $incomingNames = $incomingFacts->filter(fn (mixed $technology): bool => is_array($technology))
+            ->pluck('name')->filter()->map(fn (mixed $name): string => mb_strtolower((string) $name));
+        $legacyFrameworks = ['react', 'vue', 'vue.js', 'angular'];
+        $existingFacts = collect($existing)->reject(function (mixed $technology) use ($incomingNames, $legacyFrameworks): bool {
+            if (! is_array($technology)) {
+                return false;
+            }
+            $category = mb_strtolower((string) ($technology['category'] ?? ''));
+            if (filled($technology['version'] ?? null) || ($category !== '' && $category !== 'other')) {
+                return false;
+            }
 
-        return $facts->unique(fn (array $technology): string => mb_strtolower(
-            (string) ($technology['name'] ?? '').'|'.(string) ($technology['version'] ?? ''),
-        ))->values()->all();
+            $name = mb_strtolower((string) ($technology['name'] ?? ''));
+
+            return in_array($name, $legacyFrameworks, true) && ! $incomingNames->contains($name);
+        });
+
+        $facts = $existingFacts->merge($incomingFacts)->values()
+            ->filter(fn (mixed $technology): bool => is_array($technology) && filled($technology['name'] ?? null))
+            ->map(function (array $technology, int $index): array {
+                $version = filled($technology['version'] ?? null) ? mb_substr(trim((string) $technology['version']), 0, 80) : null;
+                $category = filled($technology['category'] ?? null) ? mb_substr(trim((string) $technology['category']), 0, 80) : 'Other';
+
+                return [
+                    'name' => mb_substr(trim((string) $technology['name']), 0, 120),
+                    'version' => $version,
+                    'source' => mb_substr(trim((string) ($technology['source'] ?? 'fingerprint')), 0, 40),
+                    'category' => $category,
+                    '_score' => ($version ? 4 : 0) + ($category !== 'Other' ? 2 : 0) + ($index / 10000),
+                ];
+            });
+
+        return $facts->groupBy(fn (array $technology): string => mb_strtolower($technology['name']))
+            ->map(fn (Collection $versions): array => $versions->sortByDesc('_score')->first())
+            ->map(function (array $technology): array {
+                unset($technology['_score']);
+
+                return $technology;
+            })->values()->all();
     }
 }

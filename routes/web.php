@@ -27,7 +27,6 @@ Route::middleware('auth')->group(function (): void {
     Route::get('/organizations/{organization}/attack-surface/vulnerabilities', [AttackSurfaceController::class, 'vulnerabilities'])->whereUuid('organization')->name('attack-surface.vulnerabilities');
     Route::get('/organizations/{organization}/attack-surface/vulnerabilities/{domain}', [AttackSurfaceController::class, 'vulnerabilityDetail'])->whereUuid(['organization', 'domain'])->name('attack-surface.vulnerabilities.detail');
     Route::post('/organizations/{organization}/attack-surface/vulnerabilities/{domain}/port-scans', [AttackSurfaceController::class, 'startPortScan'])->whereUuid(['organization', 'domain'])->middleware('throttle:2,1,cti-port-scans')->name('attack-surface.port-scans.store');
-    Route::delete('/organizations/{organization}/attack-surface/vulnerabilities/{domain}/port-scans/{run}', [AttackSurfaceController::class, 'cancelPortScan'])->whereUuid(['organization', 'domain', 'run'])->middleware('throttle:6,1,cti-port-scans')->name('attack-surface.port-scans.cancel');
     Route::get('/organizations/{organization}/attack-surface', [AttackSurfaceController::class, 'index'])->whereUuid('organization')->name('attack-surface');
     Route::get('/organizations/{organization}/attack-surface/{domain}/tls', [AttackSurfaceController::class, 'show'])->whereUuid(['organization', 'domain'])->name('attack-surface.tls');
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
@@ -41,7 +40,6 @@ Route::middleware('auth')->group(function (): void {
         Route::middleware('throttle:12,1,cti-domains')->group(function (): void {
             Route::post('/', [MonitoredDomainController::class, 'store'])->name('store');
             Route::delete('/{domain}', [MonitoredDomainController::class, 'destroy'])->whereUuid('domain')->name('destroy');
-            Route::patch('/{domain}/assets/{asset}/visibility', [AssetManagementController::class, 'visibility'])->whereUuid(['domain', 'asset'])->name('assets.visibility');
             Route::delete('/{domain}/assets/{asset}', [AssetManagementController::class, 'destroy'])->whereUuid(['domain', 'asset'])->name('assets.destroy');
             Route::post('/{domain}/challenge', [MonitoredDomainController::class, 'rotateToken'])->whereUuid('domain')->name('challenge');
             Route::post('/{domain}/verify', [MonitoredDomainController::class, 'verify'])->whereUuid('domain')->name('verify');

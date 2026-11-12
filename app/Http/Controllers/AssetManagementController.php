@@ -13,12 +13,11 @@ class AssetManagementController extends Controller
 {
     public function __construct(private AuditLogger $audit) {}
 
-    public function visibility(Request $request, string $organization, string $domain, string $asset): RedirectResponse
+    public function destroy(Request $request, string $organization, string $domain, string $asset): RedirectResponse
     {
         DB::transaction(function () use ($request, $organization, $domain, $asset): void {
             $observation = $this->lockedAsset($request, $organization, $domain, $asset);
-            $request->validate(['hidden' => ['required', 'boolean']]);
-            $hidden = $request->boolean('hidden');
+            $request->validate(['confirm_asset' => ['accepted']], ['confirm_asset.accepted' => 'Confirm subdomain deletion first.']);
 
             $related = DiscoveredAsset::query()
                 ->where('monitored_domain_id', $observation->monitored_domain_id)
@@ -27,31 +26,12 @@ class AssetManagementController extends Controller
                 ->lockForUpdate()
                 ->get();
 
-            if ($related->contains(fn (DiscoveredAsset $asset): bool => $hidden !== ($asset->hidden_at !== null))) {
-                $hiddenAt = $hidden ? now() : null;
-                $related->each(fn (DiscoveredAsset $asset): bool => (bool) $asset->forceFill(['hidden_at' => $hiddenAt])->save());
-                $this->record($request, $organization, $observation, $hidden ? 'asset.hidden' : 'asset.restored');
-            }
-        });
-
-        $hidden = $request->boolean('hidden');
-
-        return $this->backToInventory($request, $organization, $domain)
-            ->with('status', $hidden ? 'Observasi disembunyikan.' : 'Observasi dikembalikan ke inventaris.');
-    }
-
-    public function destroy(Request $request, string $organization, string $domain, string $asset): RedirectResponse
-    {
-        DB::transaction(function () use ($request, $organization, $domain, $asset): void {
-            $observation = $this->lockedAsset($request, $organization, $domain, $asset);
-            abort_unless($observation->isImported(), 409, 'Observasi dari discovery dapat disembunyikan.');
-            $request->validate(['confirm_asset' => ['accepted']], ['confirm_asset.accepted' => 'Konfirmasi penghapusan observasi impor terlebih dahulu.']);
-
             $this->record($request, $organization, $observation, 'asset.deleted');
-            $observation->delete();
+            $deletedAt = now();
+            $related->each(fn (DiscoveredAsset $asset): bool => (bool) $asset->forceFill(['hidden_at' => $deletedAt])->save());
         });
 
-        return $this->backToInventory($request, $organization, $domain)->with('status', 'Observasi impor dihapus.');
+        return $this->backToInventory($request, $organization, $domain)->with('status', 'The subdomain was removed from the inventory.');
     }
 
     private function lockedAsset(Request $request, string $organization, string $domain, string $asset): DiscoveredAsset
@@ -76,12 +56,10 @@ class AssetManagementController extends Controller
 
     private function backToInventory(Request $request, string $organization, string $domain): RedirectResponse
     {
-        $hidden = $request->boolean('from_hidden');
-
         if ($request->boolean('from_inventory')) {
-            return to_route('assets.inventory', ['organization' => $organization, 'state' => $hidden ? 'hidden' : 'all']);
+            return to_route('assets.inventory', ['organization' => $organization]);
         }
 
-        return redirect()->to(route('domains.show', [$organization, $domain, 'assets' => $hidden ? 'hidden' : 'all']).'#inventaris');
+        return redirect()->to(route('domains.show', [$organization, $domain]).'#inventory');
     }
 }

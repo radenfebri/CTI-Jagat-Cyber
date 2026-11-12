@@ -27,15 +27,15 @@ class CloudflareConnectionController extends Controller
         $enabled = $request->boolean('enabled');
 
         if ($enabled && $target->verified_at === null) {
-            throw ValidationException::withMessages(['zone_id' => 'Verifikasi domain terlebih dahulu.']);
+            throw ValidationException::withMessages(['zone_id' => 'Verify the domain first.']);
         }
 
         if ($enabled && blank($data['zone_id'] ?? null)) {
-            throw ValidationException::withMessages(['zone_id' => 'Masukkan Zone ID Cloudflare.']);
+            throw ValidationException::withMessages(['zone_id' => 'Enter the Cloudflare Zone ID.']);
         }
 
         if ($enabled && blank($data['api_token'] ?? null) && blank($target->cloudflare_api_token)) {
-            throw ValidationException::withMessages(['api_token' => 'Masukkan API Token Cloudflare dengan izin Zone DNS Read.']);
+            throw ValidationException::withMessages(['api_token' => 'Enter a Cloudflare API token with Zone DNS Read permission.']);
         }
 
         DB::transaction(function () use ($request, $workspace, $target, $enabled, $data): void {
@@ -59,7 +59,7 @@ class CloudflareConnectionController extends Controller
         });
 
         return to_route('domains.show', [$workspace, $target])->with('status', $enabled
-            ? 'Konektor Cloudflare tersimpan untuk domain ini.'
-            : 'Konektor Cloudflare dilepas dari domain ini.');
+            ? 'The Cloudflare connector was saved for this domain.'
+            : 'The Cloudflare connector was removed from this domain.');
     }
 }

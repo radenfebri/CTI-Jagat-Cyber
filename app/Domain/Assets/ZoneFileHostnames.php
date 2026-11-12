@@ -16,7 +16,7 @@ final class ZoneFileHostnames
     public function read(string $contents, string $zone): array
     {
         if (str_contains($contents, "\0") || ! mb_check_encoding($contents, 'UTF-8')) {
-            throw new InvalidArgumentException('Gunakan file zona BIND dalam bentuk teks UTF-8.');
+            throw new InvalidArgumentException('Use a UTF-8 text BIND zone file.');
         }
 
         $contents = str_starts_with($contents, "\xEF\xBB\xBF") ? substr($contents, 3) : $contents;
@@ -33,10 +33,10 @@ final class ZoneFileHostnames
                 if (count($tokens) === 2 && strcasecmp($head, '$ORIGIN') === 0) {
                     $origin = $value === '.' ? '' : DomainName::normalize($this->absoluteName($value, $origin));
                     if ($origin === null) {
-                        throw new InvalidArgumentException('Nama pada $ORIGIN tidak valid.');
+                        throw new InvalidArgumentException('The $ORIGIN name is invalid.');
                     }
                 } elseif (count($tokens) !== 2 || strcasecmp($head, '$TTL') !== 0 || ! $this->isTtl($value)) {
-                    throw new InvalidArgumentException('Hanya direktif $ORIGIN dan $TTL yang didukung. Ekspor zona lengkap tanpa $INCLUDE atau $GENERATE.');
+                    throw new InvalidArgumentException('Only $ORIGIN and $TTL directives are supported. Export the complete zone without $INCLUDE or $GENERATE.');
                 }
 
                 continue;
@@ -46,7 +46,7 @@ final class ZoneFileHostnames
             $offset = $ownerOmitted ? 0 : 1;
             $owner = $ownerOmitted ? $previousOwner : $this->absoluteName($head, $origin);
             if ($owner === null) {
-                throw new InvalidArgumentException('Record pertama harus mencantumkan nama pemilik.');
+                throw new InvalidArgumentException('The first record must include an owner name.');
             }
 
             $seenTtl = $seenClass = false;
@@ -64,7 +64,7 @@ final class ZoneFileHostnames
 
             $type = strtoupper($tokens[$offset] ?? '');
             if ((! in_array($type, self::RECORD_TYPES, true) && ! preg_match('/^TYPE[0-9]{1,5}$/D', $type)) || ! isset($tokens[$offset + 1])) {
-                throw new InvalidArgumentException('Ada record yang tidak didukung atau tidak lengkap. Gunakan ekspor zona BIND.');
+                throw new InvalidArgumentException('The zone contains an unsupported or incomplete record. Use a BIND zone export.');
             }
 
             $previousOwner = $owner;
@@ -72,13 +72,13 @@ final class ZoneFileHostnames
             if ($name !== null && str_ends_with($name, '.'.$zone)) {
                 $hostnames[$name] = true;
                 if (count($hostnames) > 1000) {
-                    throw new InvalidArgumentException('Impor maksimal 1.000 nama unik per file.');
+                    throw new InvalidArgumentException('A file may import up to 1,000 unique names.');
                 }
             }
         }
 
         if ($hostnames === []) {
-            throw new InvalidArgumentException('Tidak ada nama subdomain yang dapat diimpor dari zona ini.');
+            throw new InvalidArgumentException('No importable subdomain names were found in this zone.');
         }
 
         return array_keys($hostnames);
@@ -122,7 +122,7 @@ final class ZoneFileHostnames
                 $comment = true;
             } elseif (! $quoted && ($char === '(' || $char === ')')) {
                 if ($parenthesized === ($char === '(')) {
-                    throw new InvalidArgumentException('Tanda kurung pada file zona tidak seimbang.');
+                    throw new InvalidArgumentException('The zone file contains unbalanced parentheses.');
                 }
                 $parenthesized = $char === '(';
                 $entry .= ' ';
@@ -137,7 +137,7 @@ final class ZoneFileHostnames
         }
 
         if ($quoted || $parenthesized) {
-            throw new InvalidArgumentException('Tanda kutip atau kurung pada file zona belum ditutup.');
+            throw new InvalidArgumentException('The zone file contains an unclosed quote or parenthesis.');
         }
         if (trim($entry) !== '') {
             yield $entry;

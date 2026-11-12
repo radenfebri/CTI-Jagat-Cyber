@@ -116,7 +116,7 @@ final class NativeWebProbe implements WebProbe
             $add('jQuery', null, 'body');
         }
         foreach ([
-            'React' => '/(?:react(?:\.production)?\.min)?\.js/i',
+            'React' => '/\b(?:react|react-dom)(?:\.production)?(?:\.min)?\.js/i',
             'Vue' => '/vue(?:\.global)?(?:\.prod)?\.js/i',
             'Angular' => '/(?:angular|zone)\.min?\.js/i',
         ] as $name => $pattern) {

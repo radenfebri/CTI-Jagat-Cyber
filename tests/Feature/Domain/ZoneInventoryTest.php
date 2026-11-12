@@ -105,7 +105,7 @@ class ZoneInventoryTest extends TestCase
             $domain->assets()->where('source', 'zone_file')->whereNull('retired_at')->orderBy('value')->pluck('value')->all(),
         );
         $this->assertDatabaseCount('discovered_assets', 2);
-        $this->get(route('domains.show', [$domain->organization_id, $domain]))->assertOk()->assertSee('Impor file zona BIND');
+        $this->get(route('domains.show', [$domain->organization_id, $domain]))->assertOk()->assertSee('Import BIND zone');
         Queue::assertNothingPushed();
     }
 

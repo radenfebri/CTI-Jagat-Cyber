@@ -35,13 +35,13 @@ class DomainNamesController extends Controller
             }
             $hostname = DomainName::normalize(str_contains($line, '.') ? $line : $line.'.'.$target->hostname);
             if ($hostname === null || ! str_ends_with($hostname, '.'.$target->hostname)) {
-                throw ValidationException::withMessages(['hostnames' => 'Baris '.($number + 1).' harus berupa subdomain dalam zona ini, tanpa wildcard, URL, atau nilai TXT.']);
+                throw ValidationException::withMessages(['hostnames' => 'Line '.($number + 1).' must contain a subdomain in this zone without a wildcard, URL, or TXT value.']);
             }
             $hostnames[$hostname] = true;
         }
 
         if (count($hostnames) > 250 || $hostnames === []) {
-            throw ValidationException::withMessages(['hostnames' => 'Masukkan 1 sampai 250 hostname unik.']);
+            throw ValidationException::withMessages(['hostnames' => 'Enter between 1 and 250 unique hostnames.']);
         }
 
         return $this->save($request, $workspace, $target, array_keys($hostnames), 'manual');
@@ -52,7 +52,7 @@ class DomainNamesController extends Controller
         $workspace = $request->user()->organizations()->whereKey($organization)->firstOrFail();
         $target = $workspace->monitoredDomains()->findOrFail($domain);
         Gate::authorize('manage', $target);
-        abort_if($target->verified_at === null, 409, 'Verifikasi domain terlebih dahulu.');
+        abort_if($target->verified_at === null, 409, 'Verify the domain first.');
         $data = $request->validate(['zone_file' => ['required', 'file', 'max:256']]);
 
         try {
@@ -69,13 +69,13 @@ class DomainNamesController extends Controller
     {
         DB::transaction(function () use ($workspace, $target, $hostnames, $source, $request): void {
             $current = $workspace->monitoredDomains()->lockForUpdate()->findOrFail($target->id);
-            abort_unless($current->verified_at !== null, 409, 'Verifikasi domain terlebih dahulu.');
+            abort_unless($current->verified_at !== null, 409, 'Verify the domain first.');
             $this->inventory->recordHostnames($current, $hostnames, $source);
             $this->audit->record($workspace->id, $request->user()->id, 'domain.hostnames_imported', [
                 'domain_id' => $current->id, 'count' => count($hostnames), 'source' => $source,
             ], $request->ip());
         });
 
-        return to_route('domains.show', [$workspace, $target, 'assets' => 'subdomains'])->with('status', count($hostnames).' nama disimpan sebagai observasi impor.');
+        return to_route('domains.show', [$workspace, $target, 'assets' => 'subdomains'])->with('status', count($hostnames).' hostnames were saved as imported observations.');
     }
 }

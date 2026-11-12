@@ -28,9 +28,11 @@ class PythonScannerIntegrationTest extends TestCase
         Http::fake([
             'http://127.0.0.1:9100/v1/fingerprint' => Http::response([
                 'hostname' => 'api.example.com',
+                'scheme' => 'https',
+                'status_code' => 200,
                 'server_header' => 'nginx/1.24.0',
                 'technologies' => [
-                    ['name' => 'PHP', 'version' => '8.3.0', 'source' => 'header'],
+                    ['name' => 'PHP', 'version' => '8.3.0', 'source' => 'header', 'category' => 'Programming languages'],
                 ],
             ]),
         ]);
@@ -55,8 +57,11 @@ class PythonScannerIntegrationTest extends TestCase
             'authorization_id' => (string) Str::uuid(),
             'public_ip' => '93.184.216.34',
             'scheme' => 'https',
-            'status_code' => 200,
-            'technologies' => [['name' => 'Bootstrap', 'version' => '5.3.3', 'source' => 'body']],
+            'status_code' => 301,
+            'technologies' => [
+                ['name' => 'Bootstrap', 'version' => '5.3.3', 'source' => 'body'],
+                ['name' => 'React', 'version' => null, 'source' => 'body'],
+            ],
             'checked_at' => now(),
         ]);
 
@@ -64,8 +69,11 @@ class PythonScannerIntegrationTest extends TestCase
 
         $observation = $domain->webObservations()->where('hostname', $asset->value)->firstOrFail();
         $this->assertSame('nginx/1.24.0', $observation->server_header);
+        $this->assertSame(200, $observation->status_code);
         $this->assertCount(2, $observation->technologies);
         $this->assertTrue(collect($observation->technologies)->contains('name', 'PHP'));
+        $this->assertTrue(collect($observation->technologies)->contains('category', 'Programming languages'));
+        $this->assertFalse(collect($observation->technologies)->contains('name', 'React'));
         Http::assertSent(fn ($request): bool => $request->hasHeader('Authorization', 'Bearer worker-token')
             && $request->data()['hostname'] === 'api.example.com'
             && $request->data()['base_domain'] === 'example.com');

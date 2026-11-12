@@ -11,7 +11,7 @@ final class SystemDnsResolver implements DnsResolver
         $records = @dns_get_record($hostname.'.', $type);
 
         if ($records === false) {
-            throw new RuntimeException('Resolver DNS tidak dapat menyelesaikan permintaan.');
+            throw new RuntimeException('The DNS resolver could not complete the request.');
         }
 
         return array_values($records);

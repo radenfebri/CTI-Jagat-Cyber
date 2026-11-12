@@ -37,14 +37,15 @@ class WebObservation extends Model
     }
 
     #[Scope]
-    protected function listedSubdomains(Builder $query, bool $hidden = false): void
+    protected function listedSubdomains(Builder $query): void
     {
-        $query->whereExists(function (QueryBuilder $assets) use ($hidden): void {
+        $query->whereExists(function (QueryBuilder $assets): void {
             $assets->selectRaw('1')->from('discovered_assets')
                 ->whereColumn('discovered_assets.monitored_domain_id', 'web_observations.monitored_domain_id')
                 ->whereColumn('discovered_assets.value', 'web_observations.hostname')
-                ->where('discovered_assets.record_type', 'SUBDOMAIN')->whereNull('discovered_assets.retired_at');
-            $hidden ? $assets->whereNotNull('discovered_assets.hidden_at') : $assets->whereNull('discovered_assets.hidden_at');
+                ->where('discovered_assets.record_type', 'SUBDOMAIN')
+                ->whereNull('discovered_assets.retired_at')
+                ->whereNull('discovered_assets.hidden_at');
         });
     }
 }
